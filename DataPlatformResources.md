@@ -279,3 +279,107 @@ Is supported for use with SQL Server, but you will need to set a higher recovery
 4. During failover the virtual machine is added to the target environment
 
 ![azure site recovery](images/azure-site-recovery.png)
+
+# Deploy PaaS solutions with Azure SQL
+
+**************************************
+
+## PaaS options fol deploying SQL Server in Azure
+
+PaaS provides a complete development and deployment environment which can be used for simple cloud-based apps as well as for advanced entreprise apps.
+
+- Azure SQL Database - build upon SQL Server engine in the cloud. It gives flexibility in building new application services, and granular deployment options at scale. Offers a low maintenance solution.
+- Azure SQL Managed Instance - it is best for migration scenarios to che cloud as it provides fully manageds services and capabilities.
+
+### Deployment models
+
+Azure SQL Database is available in two deployment models:
+
+- Single database - is billed and managed on a per database level. You manage each database individually from scale and data size perspective. Each database has its own dedicated resources, even if deployed to the same logical server.
+- Elastic Pools - a group of databases that are managed together and share a common set of resources. Provides a cost-efective solution for SaaS application model, since resources are shared between all databases. You can configure resources either on DTU-based or vCore-based purchasing model.
+
+### Purchasing model
+
+#### Database Transaction Unit (DTU)
+
+Are calculated on a formula combining compute, storage, and I/O resources. It is a good choice for who want simple, preconfigured resource options.
+
+Comes in several service tiers, such as Basic, Standard and Premium. Each tier has varying capabilities, providing a wide range of options.
+
+In terms of performance, the Basic tier is used for less demanding workloads, while Premium is used for intensive workloads.
+
+Compute and storage are dependent on the DTU level, and they provide a range of performance at capabilities at a fixed storage limit, backup retention, and cost.
+
+DTU purchasing model is only supported by Azure SQL Database.
+
+#### vCore
+
+Allows you to purchase a specified number of vCores based on your given workloads. It is the default purchasing model for Azure SQL Database. vCore databases have a specific relationship between the number of cores and the amount of memory and storage provided to the database. It is supported by either Azure SQL Database and Azure SQL Managed Instance.
+
+You can purchase in three different service tiers:
+
+- General Purpose: it is backed by Azure premium storage, it will have higher latency than Business Critical. Provides two compute tiers:
+  - Provisined - Compute resources are pre-allocated. Billed per hour based on vCores configured.
+  - Serveless - compute resources are auto-scalled. Billed per second basend on vCores used.
+- Business Critical - it is for high performing workloads, offering the lowest latency. It is backed by local SSDs, instead of Azure blob storage. Offers the highest resilience to failure and provides buit-in read-only database replica, that can be used to off-load reporting workloads.
+- Hyperscale - it can scale beyond the 4 TB limit, supports databases of up to 100 TB.
+
+### Serverless
+
+A compute tier that will automatically scale up or down the resources for a given database based on workload demand. If the workload no longer requires compute resources, the database will become "paused" and only storage is billed during the period the database is inactive. When a connection attempt is made, the database will "resume" and become available.
+
+![serverless model](images/serverless.png)
+
+The autopause delay has a min value of 60 minutes and a max value of seven days.
+
+Any applications using serverless should be configured to handle connection errors and include retry logic.
+
+Another difference between serverless and provisioned vCore model is that with serverless you can specify a min and max number of vCores. Memory and I/O limits are proportional to the range that is specified. You can select a minimum of a half of a vCore and a maximum of 16 vCores.
+
+Serverless in not fully compatible with all features in Azure SQL Database since some of them require background processes to run at all times, such as:
+
+- Geo-replication
+- Long-term backup retention
+- A job database in elastic jobs
+- The sync database is SQL Data Sync
+
+Serverless is currently only supported in General Purpose tier.
+
+### Backups
+
+In PaaS offering, backups are performed automatically without any intervertion. Backups are stored in Azure bob geo-redundant storage and by default are retained for between 7 and 35 days, based on the service tier of the database. Basic and vCore databases default to seven days of retention, and on vCore database this value can be adjusted by the administrator. The retention time can be extended by configuring long-term retention (LTR), wich would allow you to retain backups for up to 10 years.
+
+In order to provide redundance, you are able to use read-accessible geo-redundant blob storage (RA-GRS). This storage would replicate your database backups to a secondary region. It would also allow you to read from that secondary region if needed.
+
+Manal backups of databases are not supported, and the platform will deny any request to do so.
+
+Database backups are taken on a given schedule:
+
+- Full - once a week
+- Differential - every 12 hours
+- Log - every 5-10 minutes depending on transaction log activity
+
+This backup schedule should meet the needs of most recovery point/time objectives (RPO/RTO), however, each customer should evaluate wheter they meet your business requirements.
+
+Due to nature of PaaS, you cannot mannually restore a database using conventional methods, such as issuing the T-SQL command RESTORE DATABASE.
+
+It is not possible to restore over an existing database. The existing database must be dropped or renamed prior to inintiating the restore process. Depending on the platform service tier, restore times are not guaranteed and could fluctuate. It is recommended that you test the restore process the obtain a baseline metric on how long a restore could take.
+
+The restore options available are:
+
+- Restore using the Azure portal - you have the option of restoring to the same Azure SQL Database server, or can create a new database on a new server in any Azure region.
+- Restore using scripting Languages - can utilize both PowerShell and Azure CLI
+
+Copy-only backup to Azure blob storage is available only for SQL Managed Instance
+
+### Active geo-replication
+
+It's a business continuity feature that asynchronously replicates a database to up to four secondary replicas. As transactions are committed to the primary (and its replicas within the same region), the transactions are sent to the secondaries to be replayed. Because this communication is done asynchronously, the calling applications does not have to waity the secondary replica to commit the transaction prior to SQL Server returning control to the caller.
+
+The secondary databases are readable and can be used to offload read-only workloads, thus freeing up resources for transactional workloads on the primary or placing data closer to the end users. Secondary databases can be in the same region as the primary or in another Azure region.
+
+With geo-replication you can initiate a failover either manually by the user or from the application. If a failover occurs, you will need to update the application connection strings to reflect the new endpoint.
+
+#### Failover groups
+
+Are built on top of the technology used in geo-replication, but provide a single endpoint for connection, which can be utilized to route traffic to the appropriate replica. Your application can then connect after a failover without connection string changes.
