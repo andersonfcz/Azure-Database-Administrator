@@ -383,3 +383,330 @@ With geo-replication you can initiate a failover either manually by the user or 
 #### Failover groups
 
 Are built on top of the technology used in geo-replication, but provide a single endpoint for connection, which can be utilized to route traffic to the appropriate replica. Your application can then connect after a failover without connection string changes.
+
+### Deploying Azure SQL Database via PowerShell/CLI
+
+PowerShell example where you are creating a new resource group, and defining an admin called SqlAdmin and then creating a new server, database, and firewall rule.
+
+```
+# Connect-AzAccount
+
+# The SubscriptionId in which to create these objects
+$SubscriptionId = ''
+
+# Set the resource group name and location for your server
+$resourceGroupName = "myResourceGroup-$(Get-Random)"
+$location = "westus2"
+
+# Set an admin login and password for your server
+$adminSqlLogin = "SqlAdmin"
+$password = "ChangeYourAdminPassword1"
+
+# Set server name - the logical server name has to be unique in the system
+$serverName = "server-$(Get-Random)"
+
+# The sample database name
+$databaseName = "mySampleDatabase"
+
+# The ip address range that you want to allow to access your server
+$startIp = "0.0.0.0"
+$endIp = "0.0.0.0"
+
+# Set subscription
+Set-AzContext -SubscriptionId $subscriptionId
+
+# Create a resource group
+$resourceGroup = New-AzResourceGroup -Name $resourceGroupName -Location $location
+
+# Create a server with a system wide unique server name
+$server = New-AzSqlServer -ResourceGroupName $resourceGroupName `
+ -ServerName $serverName `
+ -Location $location `
+ -SqlAdministratorCredentials $(New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList $adminSqlLogin, $(ConvertTo-SecureString -String $password -AsPlainText -Force))
+
+# Create a server firewall rule that allows access from the specified IP range
+
+$serverFirewallRule = New-AzSqlServerFirewallRule -ResourceGroupName $resourceGroupName `
+ -ServerName $serverName `
+ -FirewallRuleName "AllowedIPs" -StartIpAddress $startIp -EndIpAddress $endIp
+
+# Create a blank database with an S0 performance level
+
+$database = New-AzSqlDatabase -ResourceGroupName $resourceGroupName `
+ -ServerName $serverName `
+ -DatabaseName $databaseName `
+ -RequestedServiceObjectiveName "S0" `
+ -SampleName "AdventureWorksLT"
+ ```
+
+ The Azure CLI can also be used
+
+ ```
+ #!/bin/bash
+
+# set execution context (if necessary)
+az account set --subscription <replace with your subscription name or id>
+
+# Set the resource group name and location for your server
+resourceGroupName=myResourceGroup-$RANDOM
+location=westus2
+
+# Set an admin login and password for your database
+adminlogin=ServerAdmin
+password=`openssl rand -base64 16`
+
+# password=<EnterYourComplexPasswordHere1>
+
+# The logical server name has to be unique in all of Azure 
+servername=server-$RANDOM
+
+# The ip address range that you want to allow to access your DB
+startip=0.0.0.0
+endip=0.0.0.0
+
+# Create a resource group
+az group create \
+ --name $resourceGroupName \
+ --location $location
+
+# Create a logical server in the resource group
+az sql server create \
+ --name $servername \
+ --resource-group $resourceGroupName \
+ --location $location \
+ --admin-user $adminlogin \
+ --admin-password $password
+
+# Configure a firewall rule for the server
+
+az sql server firewall-rule create \
+ --resource-group $resourceGroupName \
+ --server $servername \
+ -n AllowYourIp \
+ --start-ip-address $startip \
+ --end-ip-address $endip
+
+# Create a database in the server
+az sql db create \
+ --resource-group $resourceGroupName \
+ --server $servername 
+ --name mySampleDatabase \
+ --sample-name AdventureWorksLT \
+ --edition GeneralPurpose \
+ --family Gen4 \
+ --capacity 1 \
+
+# Echo random password
+echo $password
+```
+
+Another method for deploying resources is using an Azure Resource Manager template. Microsoft provides a GitHub repository called “Azure-Quickstart-Templates”, which hosts Azure Resource Manager templates that you can reference.
+
+```
+#Define Variables for parameters to pass to template
+$projectName = Read-Host -Prompt "Enter a project name"
+$location = Read-Host -Prompt "Enter an Azure location (i.e. centralus)"
+$adminUser = Read-Host -Prompt "Enter the SQL server administrator username"
+$adminPassword = Read-Host -Prompt "Enter the SQl server administrator password" -AsSecureString
+$resourceGroupName = "${projectName}rg"
+
+#Create Resource Group and Deploy Template to Resource Group
+New-AzResourceGroup -Name $resourceGroupName -Location $location
+
+New-AzResourceGroupDeployment -ResourceGroupName $resourceGroupName `
+ -TemplateUri "https://raw.githubusercontent.com/Azure/azure-quickstart-templates/master/101-sql-logical-server/azuredeploy.json" `
+ -administratorLogin $adminUser -administratorLoginPassword $adminPassword
+
+Read-Host -Prompt "Press [ENTER] to continue ..."
+```
+
+### Deploy SQL Database elastic pool
+
+Elastic pools are a deployment option in which you purchase Azure compute resources (CPU, memory, storage) that is shared among multiple databases defined as belonging to the same pool. An comparison to an on-promises SQL Server is that elasitc pool is like a SQL Server instance that has multiple user databases. 
+
+#### Managing pool resources
+
+The Azure portal delivers information regarding the state and health of the elastic pool, you can view resource utilization and see which database is consuming the most resources. This information can be helpful for diagnosing performance issues or identity a database that might not be a good fit for the pool, such as when one database is consuming the majority of pool resources.
+
+You can decrease or incresae resources allocated to the pool via the Configure option in the Pool settings.
+
+You can adjust:
+
+- Pool size including DTUs, vCores, and storage size.
+- Service Tier
+- Resources por database
+- Which databases are included in the pool, by adding or removing them.
+
+Elastic pool is a good fit for multi-tenant databases where each tenant has its own copy of the database, with even resource utilization.
+
+### SQL database hyperscale
+
+Azure SQL Database has been limited to 4 TB of storage per database. Azure SQL Database Hyperscale allows databases to be 100 TB or more. Hyperscale introduces new horizontal scaling techniques to add compute nodes as the data sizes grow. The cost of Hyperscale is the same as the cost of Azure SQL Database, however, there's a per terabyte cost for storage. Once an Azure SQL Database is converted to Hyperscale, you can't convert it back.
+
+Hyperscale separates the query processing engine, where the semantics of various data engines diverge, from the components that provide long-term storage and durability for the data. In this way, storage can be scaled out as needed.
+
+The Hyperscale service tier in Azure SQL Database is available in the vCore-based purchasing model.
+
+#### Benefits
+
+Hyperscale databases aren't created with a defined max size. A Hyperscale database grows as needed, and you're billed for the capacity you use. For read-intensive workloads, it provides rapid scale-out by provisioning extra replicas as needed for offloading read workloads.
+
+The time required to create database backup or to scale up or down is no longer tied to the volume of data in the database. Hyperscale databases can be backed up instantanously and can scale a database in the tens of terabytes up or down in minutes. Hyperscale also provides fast database restores which run in minutes rather than hours or days.
+
+Provides rapid scalability:
+
+- Scaling Up/Down - you can scale up the primary compute size in terms of resources like CPU and memory, and then scale down, in constant time. Because storage is shared, scaling up and down ins't linked to the volume of data in the database.
+- Scaling In/Out - you can provision one or more compute replica as read-only replicas to offlead read workload from the primary compute. these replicas also serve as hot-standbys to failover from the primary. Provisioning these extra compute replicas can be done in constant time and is an online operation. You can connect to read-only replicas by setting the ApplicationIntent argument on your connection string to ReadOnly. Any connections with the ReadONly application internt are automatically routed to one the de read-only replicas.
+
+Hyperscale separates the query processing engine from the components that provide long-term storage and durability for the data. This architecture provides the ability to scale storage capacity as far as needed (initial target is 100 TB) and the ability to scale compute resources rapdly.
+
+![hyperscale architecture](images/hyperscale.png)
+
+#### Security considerations
+
+Hyperscale shares the same security capabilities as other Azure SQL Databases tiers, They're protected by the layered defense-in-depth approach.
+
+![hyperscale security layer](images/hyperscale-security.png)
+
+- Network Security - the firs layer of defense, uses IP firewall to allow access based on the originating IP address and  Virtual Network firewall rules to allow the ability to accept communications that are sent from selected subnets inside a virtual network.
+- Access Management - provides through authetication methods to ensure a user is whom they claim to be:
+  - SQL Authentication
+  - Azure Active Directory Authentication
+  - Windows Authentication for Azure AD Principals
+
+Hyperscale also supports Row-level security that enable users to control access to row in a database tables based on the characteristics of the user executing a query.
+
+![row-level security](images/row-level-security.png)
+
+- Threat Protection - abilities in auditing and threat detection capabilities. Tracks database activities and helps maintian compliance with security standards by recording database events to an audit log in a Azure storage account. Advanced Threat Protection can be enabled per server for an extra fee and analyzes logs to detect unusual behavior and potentially harmful attempts to access or exploit databases. Alerts are created for suspicious activities such as SQL injection, potential data infiltration, and brute force attacks or for anomalies in access patterns catch privilege escalation and breached credentials use.
+- Information Protection - provided in the following ways:
+- TLS (Encryption-in-transit)
+- Transparet Data Encryption(Encryption-at-rest)
+- Key management with Azure Key Vault
+- Always Encryted (Encryption-in-use)
+- Dynamic data masking
+
+#### Performance considerations
+
+Hyperscale is intended for users who have large on-premises SQL Server databases and want to modernize their applications by moving to the cloud, or for users who are already using Azure SQL Database and want to significantly expand the potential for database growth. It is also intended for users who seek both high performance and high scalability.
+
+Hyperscala performance capabilities:
+
+- Nearly instantaneous database backups (based on file snapshots stored in Azure Blob storage) regardless of size with no IO effect on compute reources.
+- Fast database restore (based on file snapshots) in minutes rather than hours or days (not a size data operation).
+- Higher overall performance due to higher transaction log throughput and faster transaction commit times regardless of data volumes.
+- Rapid scale out - you can provision one or more read-only replicas for offloading read workloads and for use as hot-standbys
+- Rapid scale up - you can in constant time, scale up compute resources to accommodate heavy workloads when needed, and the scale down when not needed.
+
+SQL Database Hyperscale doesn't support:
+
+- SQL Managed Instance
+- Elastic Pools
+- Geo-replication
+- Query Performance Insights
+
+### SQL managed instance
+
+Azure SQL Managed Instance is a fully functional SQL Server instance that is almost 100% compatible with on-premises ecosystem. It includes features like SQL Agent, access to tempdb, cross-database query and common language runtime (CLR). The service uses the same infrastructure as Azure SQL Database and all the benefits of the PaaS service such as automatic backups, automatic patching, and built-in high availability.
+
+#### Azure SQL Managed Instance features
+
+Azure SQL Managed Instance allows for easy migration path for existing applications by allowing restore from on-premises backups. It provides an entire SQL Server instance, allowing up to 100 databases, and providing access to the system databases. It also provides features that aren't available in Azure SQL Database, including cross-database queries, CLR and along with the msdb system database, it allows the use of SQL Agent.
+
+#### Options
+
+Managed instance is purchased using the vCore model and is available in two service tiers, Business Critical and General Purpose. There are minimal functionality differences between them, the main two are that Business Critical includes In-Memory OLTP and offers a readable secondary, neither of which is available with the General Purpose tier. Both tiers offer the same levels of availability and allow for independent configuration of storage and compute.
+
+#### Link feature
+
+Link feature provides hybrid capability of replicating databases from SQL Server instances to Azure SQL Managed Instance. It replicates data using distributed availability groups available on Always On availability group technology. Transaction log records are replicated as part of distributed availability groups.
+
+The transaction log records on the primary instance can't be truncated untill they've been replicated to the secondary instance. Regular transaction log backups reduce the risk of running out of space on your primary instance.
+
+Link feature can also be used as a hybrid disaster recover solution, where you can fail over your SQL Server databases hosted anywhere to a database running on SQL Managed Instance. Likewise, you can use link feature to provide a read-only secondary database in SQL Database to offload intensive read-only operations.
+
+#### Instance pool
+
+Instance ppol provides a cost-efficient way to migrate smaller SQL Server instances to the cloud. Instead of consolidating smaller databases into a larger managed instance, which requires extra governance and security planning, instance pools allow you to pre-provision your resources based on your total migration resources and requirements.
+
+The instance pool provides a fast deployment time of up to five minutes, which is a good option for scenarios where deployment duration is important. All instances in a pool share the same virtual machine, and the total IP allocation is independent of the number of instances deployed.
+
+#### High availability
+
+Azure SQL Managed Instance offers 99.99% availability Service Level Agreement (SLA). The architecture is the same as Azure SQL Database with Genepal Purpose, which uses storage replication for availability, and Business critical using multiple replicas.
+
+#### Backups
+
+Backups are automatically configured for Azure SQL Managed Instance. One key difference between Azure SQL Managed Instance and Azure SQL Databases is that with Managed Instance you can manually make a copy-only backup of a database. You must back up to a URL, as access to the local storage ins't permissible. You can also configure long-term retention (LTR) for retaining automatic backups for up to 10 years in geo-redundant Azure blob storage.
+
+Database backups occur on the same schedule as with Azure SQL Database
+
+- Full - once a week
+- Differential - every 12 hours
+- Transaction Log - every 5-10 minutes depeding on transaction log usage
+
+Restory a database to an Azure SQL Managed Instance is also similar to the process with Azure SQL Database.
+You can use:
+
+- Azure portal
+- PowerShell
+- Azure CLI
+
+There are some limitations when restoring. In order to restore from one instance to another, both instances must reside within the same Azure subscription and the same Azure region. You can't restore the entire managed instance, only individual databases within the SQL Managed Instance itself.
+
+You can't restore over an existing database. You need to drop or rename prior to restoring it from backup. Since SQL Managed Instance is a fully functional SQL Server instance, you can execute a RESTORE command. However there are some limitations:
+
+- You must restore from a URL endpoint. You don't have access to local drives.
+- You can use the following options
+  - FILELISTONLY
+  - HEADERONLY
+  - LABELONLY
+  - VERIFYONLY
+- Backup files containing multiple log files can't be restored
+- Backup files containing multiple backup sets can't be restored
+- Backup containing In-Memory/FILESTREAM can't be restored.
+
+By default, the databases in a managed instance are encrypted using Transparent Data Encryption (TDE) with a Microsoft managed key. In order to take a user-initiated copy only backup, you must turn off TDE for the specific database. If a database is encrypted, you can restore it, however, you'll need to ensure that you have access to either the certificate or asymmetric key that was used to encrypt the database. If you don't have either of those two items, you won't be able to restore the database.
+
+#### Disaster recovery
+
+Azure SQL Managed Instance offers auto-failover groups as a means to implement disaster recovery. This feature protects the entire managed instance and all of the databases contained within it, not just specific databases. This proccess asynchronously replicates data from the Azure SQL Managed Instance to a secondary, however, it's currently limited to the paired Azure region of the primary copy, and only one replica is allowed.
+
+Auto-failover groups offer read-write and read-only listener endpoints, which facilitate easy connection string management. If there is a failover, application connection strings will automatically be routed to the appropriate instance. These endpoints follow a slightly different format, ``` <fog-name>.zone_id.database.windows.net whereas Azure SQL Database is in the <fog-name>.secondary.database.windows.ne ``` format.
+
+Each managed instance, primary and secondary, must be within the same DNS zone. This placement will ensure that the same multi-domain certificate can be used for client connection authentication between either of the two instances in the same failover group.
+
+### Azure SQL Edge
+
+Azure SQL Edge is an optimized relational database engine purposefully designed for IoT workloads. It provides capabilities to stream, process, and analyze relational and non-relational data such as JSON, graph, and time-series data. Azure SQL Edge is built on the latest version of the SQL Server Database Engine. Azure SQL Edge brings T-SQL programming, industry-leading performance, security, and query processing capabilities to the Edge.
+
+![sql edge](images/sql-edge.png)
+
+#### Beneficts
+
+##### Familiar T-SQL syntax and tooling
+
+SQL Developers and administrators can continue to leverage familiar T-SQL syntax and tooling sice it is based on the SQL Server Database Engine. Tooling available includes Azure portal, SQL Server Management Studio, Azure Data Studio, Visual Studio Code, and SQL Server Data Tools in Visual Studio.
+
+##### Portability
+
+Azure SQL Edge is a containerized version of the SQL Server Database Engine optimized for IoT. It is deployable to Windows and Linux-based servers capable of running the IoT Edge runtime, ranging from full-fledge servers, to smaller ARM-based devices.
+
+##### Support for multiple connection states and data sync
+
+In IoT, internet connectivity isn't always possible or reliable. Therefore, IoT Edge modules need to support all states of connectivity. Azure SQL Edge supports connected, disconnected, and hybrid semi-connected scenarios. Incremental data synchronization is possible with the Azure SQL Data Sync service and configuring sync groups to synchronize the tables you choose bi-directionally across multiple databases in Azure SQL and SQL Server instances.
+
+The synchronization process uses a sync agent on the Azure SQL Edge to sync data with the Hub database. From the Hub perspective, the synchronization process is driven by a Sync app guided by details available in the Sync database, where the synchronization metadata and logs get stored.
+
+![sql edge synchronization](images/edg-synchonization.png)
+
+##### Built-in data streaming and machine learning
+
+Azure SQL Edge has built-in support for data streaming to and from multiple inputs and outputs. This functionality borrows the same technology that powers Azure Stream Analytics and allows introspection of incoming time-series data using anomaly detection, time-windowing, aggregation, and filtering. It also has T-SQL functions that support querying time-series data. Furthermore, Azure SQL Edge supports machine learning inference and the ``` PREDICT ``` statement.
+
+#### Security considerations
+
+Security on Azure SQL Edge brings data encryption, classification, and access controls from the SQL Server Database Engine. It provides row-level security, dynamic data masking, and TDE as an extra security benefit.
+It's also benefical to encrypt any backu files created using a certificate or asymmetric key.
+
+As for network transport, Azure SQL Edge utilizes TLS and certificates to encrypt all communication. Lastly, Microsoft Defender for IoT provides a centralized and unified security solution to discover and identify IoT devices, vulnerabilities, and threats. 
