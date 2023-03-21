@@ -709,4 +709,86 @@ Azure SQL Edge has built-in support for data streaming to and from multiple inpu
 Security on Azure SQL Edge brings data encryption, classification, and access controls from the SQL Server Database Engine. It provides row-level security, dynamic data masking, and TDE as an extra security benefit.
 It's also benefical to encrypt any backu files created using a certificate or asymmetric key.
 
-As for network transport, Azure SQL Edge utilizes TLS and certificates to encrypt all communication. Lastly, Microsoft Defender for IoT provides a centralized and unified security solution to discover and identify IoT devices, vulnerabilities, and threats. 
+As for network transport, Azure SQL Edge utilizes TLS and certificates to encrypt all communication. Lastly, Microsoft Defender for IoT provides a centralized and unified security solution to discover and identify IoT devices, vulnerabilities, and threats.
+
+# Strategies for migrating to Azure SQL
+
+## Compatibility level
+
+Software vendors who build software for SQL Server have certified their software to run on a specific version of the database engine. This process, called compatibility certification, allows for an application to run on the latest releae of SQL Server, while maintaining its verdor supported compatibility level.
+
+SQL Server compatibility level has always been a database level setting. Setting compatibility level to a specific version allows for specific T-SQL keywords to be used as it also determines certain query optimizer behaviors. For example, if you had a database at a specific compatibility level and migrated it to SQL Server 2019, the execution plan shapes and query syntax should remain the same as they did originally before the migration, if it is a supportd release.
+
+The database engine version for Azure SQL DB and Azure SQL Managed Instance are not comparable with SQL Server internal build numbers, but they do refer to the same compatibility level.
+
+You can check the compatibility level:
+```
+SELECT name, compatibility_level FROM sys.databases;
+```
+
+## Support Policy for SQL Server
+
+In Microsoft support policy for SQL Server, Releases are supported for five years in primary support, and then five additional years in extended support. During the first five years, Microsoft updates all releases with enchanced capabilities, closes feature gaps and addresses performance, functional and security bugs. After a release moves into extended support, Microsoft will only address security bugs.
+
+Benefits to running on the latest release of SQL Server:
+
+- Performance
+- Security
+- Availability
+- Query functionality
+
+These benefits are improved by the one to two-year release cadence of SQL Server, and the nature of the Azure SQL Database services, which means it  never needs to be patched or upgraded where new features are added and fixes are applied automatically.
+
+Microsoft has recommended that vendors certify applications at a specific compatibility level, instead of a software version, This approach helps customers to take advantage of newer releases but maintain vendor support for applications.
+
+Microsoft includes query plan shape protection, which means your query execution plans and their performance should be nearly the same. This feature removes one of the main risks of upgrading SQL Server: optimizer changes that causes degradation in query performance. Microsoft recommends upgrading to a newer compatibility level when possible, but will support databases on older compatibility levels as longs as the release of SQL Server is a supported release.
+
+## Understand Azure preview features
+
+Azure offers preview features that are designed for non-production usage. Previews are subjected to reduced or differents service terms. Depending on the region your resources are hosted, preview features may not be available and may have limited service level agreements (SLA), and functionality.
+
+Microsoft doesn't recommend the use of preview features in a production environment, unless you're working directly with the product team to ensure support.
+
+Preview features are divided into two categories:
+
+- Private preview - features will require that Microsoft add your subscription to an allowlist for a given feature.
+- Public preview - features are opted into in the portal but are available to everyone. Experience ins't consistent across Azure services.
+
+After public preview, the status of the feature changes to generally availability (GA), it's the final release status and it means the functionality is complete and accessible to all users.
+
+## Azure database migration options
+
+Many organizations are migrating their databases platform to Azure SQL to reduce licensing costs. Migrating to Azure SQL platform is made easier by the Azure Database Migration Service (DMS). DMS supports both homogenous migrations (MySQL in a Virtual Machine to Azure SQL Database) and heterogenous sources (Oracle in a Virtual Machine to Azure Database for PostgreSQL).
+
+### Azure Migrate tool
+
+Provides a centralized location to asses and migrate on-premises servers, infrastructure, applications, and data to Azure. It provides discoverability and proper assessments of your  servers regardless of whether they are physical or virtual machines.
+
+It helps to esnure that you select the appropriate size of virtual machine so that workloads will have enough resources available. In addition, the tool provide a cost estimation.
+
+In order to utilize the Azure Migrate tolo, you must deploy a light-weight appliance, which can be deployed on a virtual or physical machine. Once the on-premises servers are discovered, the appliance will continually send metadata about each server (along with performance metrics) to Azure Migrate.
+
+Other tools you can use to map your server estate and identify compatibility:
+
+- MAP Toolkit - Microsoft Assessment and Planning Toolkit automatically collects and provide a report containing the invertory of all SQL Servers in your network, version, and server information
+- Database Experimentation Assistant - can be used to evaluate version upgrades of SQL Server by checking syntax compatibility and provides a platform to evaluate query performance on the target version.
+
+### Data Migration Assistant
+
+The MAP toolkit and Database Experimentation assistant can help you identify your databases and highlight any incompatibilities or potential performance issues in your database, but Data Migration Assistant (DMA) is a toolkit that assesses, identifies new features you can use to benefit your application, and ultimately performs the migration. This tool can be used to migrate between versions of SQL Server, from on-premises to Azure.
+
+One of the main benefits of DMA is the ability to asses queries both from Extended Event trace files and SQL queries from an external application. The DMA mitigates the risk of moving to a newer version of SQL Server or to Azure.
+
+### Azure Database Migration Service
+
+Is designed to support a wide mix of different migration scenarios with different source and target databases, and both offline (one-time) and online (continuous data sync) migration scenarios.
+
+For online migrations, Azure Database Migration Service provides a highly resilient and self-healing migration service with near-zero downtime. Steps involved:
+
+1. Fully load your on-premises database to Azure Database.
+2. Continously syncs new database transactions to the Azure target.
+3. Cut over to the target Azure service when prepared. You can stop the replication, and switch the connection strings in the application to the Azure Database.
+
+The Data Migration Service has a few prerequisites. You need to create a virtual network in Azure, and if your migration involve on-premises resources, you will need to create a VPN or ExpressRoute connection from your office to Azure.
+
+There are a number of traditional, more manual approaches to migrating databases to Azure including backup and restore, log shipping, replication, and adding an Availability Group replica in Azure. These solutions were not designed primarily for performing migrations, but they can be used for that purpose. The technique you use for physycally migrating your data will depend on the amount of downtime you can sustain during the migration process.
