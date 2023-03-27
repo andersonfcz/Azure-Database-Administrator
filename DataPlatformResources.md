@@ -792,3 +792,223 @@ For online migrations, Azure Database Migration Service provides a highly resili
 The Data Migration Service has a few prerequisites. You need to create a virtual network in Azure, and if your migration involve on-premises resources, you will need to create a VPN or ExpressRoute connection from your office to Azure.
 
 There are a number of traditional, more manual approaches to migrating databases to Azure including backup and restore, log shipping, replication, and adding an Availability Group replica in Azure. These solutions were not designed primarily for performing migrations, but they can be used for that purpose. The technique you use for physycally migrating your data will depend on the amount of downtime you can sustain during the migration process.
+
+# Migrate SQL workloads to Azure SQL Databases
+
+## Benefits of Azure SQL Database (single and elastic pools)
+
+### Backup and recovery
+
+- Automatic backup
+- Point-in-time restore
+- Backup retention 7 days+
+- Long-term backup retention for up to 10 years
+
+### High availability
+
+- 99.99% availability guarantee
+- Built-in availability with three secondary replicas
+- Zone redundancy via availability zones
+
+### Disaster recovery
+- Geo-restore of database backup
+- Active-geo replication between Azure regions
+
+### Service scalability
+
+- Dynamic scale-up and scale-down
+- Scale out with multiple shards
+- Share compute resources between databases using elastic pools
+
+### Security
+
+- Support for Azure AD authentication
+- Cloud-only security features such as Advanced Threat Protection
+- Transparent data encryption (TDE) enabled by default
+- Support for dynamic and static data masking, row-level security, and Always Encrypted
+- Firewall allowlist
+
+### Licensing
+- DTU purchasing model for predictive costing
+- vCore purchasing model, enabling storage to be scaled independently of compute
+- Combine the vCore model with Azure Hybrid Benefit for SQL Server to realize cost saving of up to 30%
+
+## Tools to support your migration planning to Azure SQL Database
+
+1. Microsoft Planning and Assessment - Use this tool in the discovery stage to confirm the source environment that you're migrating from
+2. Azure Database Migrate Service - enables you to do large-scale database migration from within the Azure portal
+3. Data Migration Assistant - use in the planning and assessment stage of a Data Platform Modernization project to check for compatibility issues that affect database functionality in Azure SQL Database.
+4. Database Experimentation Assistant - use to assess if your target server can handle workloads.
+
+## Migration planning for Azure SQL Database
+
+There are considerations that need to be planned for before migration
+
+### SQL agent jobs
+
+Azure SQL Database doesn't provide functionality to host SQL Server agent jobs that must be migrated to complementary technologies such as:
+
+- Azure automation
+- Elastic jobs
+
+### Security settings
+
+Authentication with security principals in Azure SQL Database supports:
+
+- SQL authentication
+- Azure AD authentication
+
+### Read scale-out
+
+Allows for read-only SQL workloads to be serviced by a secondary replica.
+
+### Retry application connections
+
+When you access any cloud service, it's important to understand the requirements for retry logic so an application can recover from temporary issues and problems.
+
+## Migrate SQL Server to Azure SQL Database offline
+
+### Migrate using the Data Migration Assistant
+
+Use the Data Migration Assistant to help migrate your SQL Server workload to a single or a pooled Azure SQL database, if your organization can tolerate downtime.
+
+1. Use the Data Migration Assistant to assess the database for compatibility issues.
+2. Use the compatibility report to prepare the fixes required in a T-SQL script.
+3. Make a copy of the database that's transactionally consistent.
+4. Deploy the T-SQL script with the fixes to the copy of the database
+5. Migrate the database copy to a new Azure SQL database by using the Data Migration Assistant
+
+During migration, you can employ best practices for importing database into Azure SQL Database
+
+- Choose the highest service tier and compute size that your budget allows to maximize the transfer performance. You can scale down after migration completes
+- Minimize the distance between your BACPAC file and the destination data center.
+- Disable autstatistics during migration.
+- Partition tables and indexes.
+- Drop indexed views and recreate them when finished
+- Remove rarely queried historical data to another database and migrate it to a separate Azure SQL database. You can then query this data using elastic queries.
+- After migration, update of all the statistics in the database.
+
+### Migrate to Azure SQL Database using BACPAC
+
+You can import a SQL Server database into an Azure SQL database using a BACPAC file.
+Import the data from a BACPAC file stored in Azure Blob Storage or from local storage in an on-premises location. To maximize import speed, scale your database to a higher service tier and compute size during the import process.
+
+#### Import from a BACPAC file in the Azure portal
+
+Azure portal only supports creating a single database in Azure SQL Database, and only from a BACPAC file in Azure Blob Storage
+
+1. Open the appropriate database server page and then, on the toolbal, select Import database
+2. Select the storage account and container, and the select the BACPAC file from which to import.
+3. Specify the new database size and provide the destination SQL Server credentials.
+4. Select OK
+5. To monitor an import's progress, open the database server page and, under Settings, select Import/Export history. When successful, the import has a Completed status.
+
+You could also use SqlPackage to import a BACPAC file as it's more performant than using the Azure portal
+
+```
+SqlPackage.exe /a:import /tcs:"Data Source=<Azure SQL Database Server name>.database.windows.net;Initial Catalog=<New Database name>;User Id=<your_server_admin_account_user_id>;Password=<your_server_admin_account_password>" /sf:<Local Database name>.bacpac /p:DatabaseEdition=<Service tier> /p:DatabaseServiceObjective=<Service Objective Tier>
+```
+
+### Streamline migrations with the Azure Database Migration Service
+
+The Azure Database Migration Service (DMS) is fully managed, and designed for migrations from multiple databases sources to Azure Data platform with minimal downtime. DMS is a free service that supports migrations of MySQL, PostgreSQL, and MariaDB databases to Azure Database, and it also supports SQL Server migrations, including Azure SQL Managed Instance.
+
+The service uses the Data Migration Assistant to generate assessment reports that provide recommendations to guide you through the changes needed before a migration. When you're ready, Azure Database Migration Service does all of the required steps.
+
+Before using the Data Migration Assistant, you must register a resource provider in Azure, and create an Azure Database Migration Service instance.
+
+#### Migrate using the Azure Database Migration Service
+
+1. Create a migration project
+2. Specify source details
+3. Specify target details
+4. Select source databases
+5. Configure migration settings
+6. Review the migration summary
+7. Run and monitor the migration
+8. Complete migration cutover
+
+After the full database backup is restored on the target instance, the database is available to do a migration cutover.
+
+## Migrate SQL Server to Azure SQL Database online
+
+### What is transactional replication?
+
+Where the source system must remain online throughout the migration, transactional replication uses an initial snapshot to copy the data to the Azure SQL database. The source and target systems are kept in sync until the final cutover takes place. Configuration of transactional replication in done through SQL Server Management Studio, or by executing T-SQL statements on the publisher. Transactional replication requires the following components:
+
+- Publisher - a database instance that hosts the data to be replicated (source).
+- Subscribe - a database instance that receives the data being replicatied by the Publisher (target)
+- Distributer - a database instance that stores the replication changes made at the Publisher that are required at the Subscriber
+- Article - a database object, for example, a table.
+- Publication - a collection of one or more Articles from the database being replicated
+- Subscrition - a request from a Subscribe for a Publication from a Publisher
+
+The publisher and distributer must be at least the following version and update
+
+- SQL Server 2017 (14.x)
+- SQL Server 2016 (13.x)
+- SQL Server 2014 (12.x) SP1 CU3
+- SQL Server 2014 (12.x) RTM CU10
+- SQL Server 2012 (11.x) CU8 or SP3
+
+#### Transactional replication considerations
+
+- Replicated tables must have a primary key
+- Transactional replication can't be configured from the Azure portal
+- Using the latest version of SQL Server management tools is recommended
+
+Roles that can be used with Azure SQL Database
+
+| Role | Single and pooled databases | SQL Managed Instance databases |
+| -----| --------------------------- | ------------------------------ |
+| Publisher | No | Yes |
+| Distributor | No | Yes |
+| Pull  subscriber | No | Yes |
+| Push subscriber | Yes | Yes |
+
+When synchronization is complete and you're ready to migrate, change the connection string of your applications to point them to your Azure SQL database. After transactional replication drains any changes left on your source database, and all your applications point to Azure SQL Database, you can uninstall transactional replication.
+
+A pull subscription isn't supported when the distributor is a managed instance database and the subscriber is not.
+
+## Load and move data to Azure SQL Database
+
+After you complete the migration of data to Azure SQL Database, it's important to assess and optimize the configuration fo your new database.
+
+### Define backup and recovery options for Azure SQL Database
+
+In Azure SQL Database, backups are taken automatically, and kept for between 7 and 35 days. With the DTU model, a database under the Basic tier benefits from 7 day retention. Standard and Premium databases have 35 days retention. Under the vCore model, default retention period is 7 days, which can be increased up to 35 days.
+
+Backups are stored on RA-GRS to ensure they're still available during a data center outage. To provide point-in-time restore (PITR), Azure SQL Database does transaction log backups every 5-10 minutes, differential backups every 12 hours. Alonside PITR, geo-restore is used to restore databases to another geographical region during a region-wide outage.
+
+Backups are kept for longer than 35 days by using the long-term retention (LTR). You can keep weekly, monthly, or full backups for up to 10 years in RA-GRS storage containers.
+
+### Define high availability options for Azure SQL Database
+
+Azure SQL Database availability guarantee that your database keeps running 99.99% of the time. When the underlying SQL instance fails over, downtime isn't noticeable if you use retry logic within your application.
+
+There's a choice of two high-availability architectural models used in Azure SQL Database depending on the service tier you've selected:
+
+#### Basic, Standard, and General Purpose service tier availability
+
+On this tier, high availability is achieved by using remote premium storage tier. You can transfer the compute from the active node to other nodes.
+
+#### Premium and Business Critical service tier availability
+
+High availability on this tier is achieved by using a technology similar to Always On availability groups. Both compute and storage are replicated to additional nodes.
+
+### Define disaster recovery options for Azure SQL Database
+
+- Active geo-replication - provides a readable secondary replica in the same or different AZure region. Asynchronously replicates data by using the same technology as Always On availability groups. Up to four secondary replicas, and can be used for read-only workloads. Invoke the failover process using the application or via manual procedures with the Azure CLI, Powershell, T-SQL, or REST API
+- Auto failover groups - builds on teh capabilities of active geo-replication by replicating and failing over a group of databases on an Azure SQL Database server. Grouping teh databases enables you to recover multiple databases if there's an outage.
+- Geo-restore - uses geo-redundant backups to recover a database to any Azure SQL Database server, in any region. Backups are stored  on geo-replicated storage, which means there's a delay between when the backup is taken, and when it's replicated to the other region.
+- Zone-redundant databases - by defauls, replicas in the premium availability model are located in the same physical data center. Azure availability zones allow different replicas to be hosted in different zones (data centers) within the same region.
+
+### Define service scalability options for Azure SQL Database
+
+Azure SQL Database supports vertical scaling, known as scale-up, and scale-down, and horizontal scaling (scaling out), known as sharding.
+
+Single and elastic pool databases can be scaled up and down to accommodate increases in application workload. When you scale a database up or down, the performance objective of the database will increase or decrease.
+
+Single and elastic pool databases can be sharded. Sharding is where data is distributed across multiple databases, known as shards. Each shard is an individual database that contains data relevant to the shard. Relevance is decided by the sharding key, which is used to bistribute the data via data-dependent routing. This sharding is useful when parts of the data are only available in different regions, or where the connections should be load balanced.
+
+Vertical scaling can be done via the Azure portal, Powershell, T-SQL, Azure CLI, or REST API. Horizontal scaling is done using the Elastic Database Client Library. You can use the Elastic Database Splitc-Merge tool to split and merge sharded databases.
