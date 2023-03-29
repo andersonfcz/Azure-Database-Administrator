@@ -1012,3 +1012,85 @@ Single and elastic pool databases can be scaled up and down to accommodate incre
 Single and elastic pool databases can be sharded. Sharding is where data is distributed across multiple databases, known as shards. Each shard is an individual database that contains data relevant to the shard. Relevance is decided by the sharding key, which is used to bistribute the data via data-dependent routing. This sharding is useful when parts of the data are only available in different regions, or where the connections should be load balanced.
 
 Vertical scaling can be done via the Azure portal, Powershell, T-SQL, Azure CLI, or REST API. Horizontal scaling is done using the Elastic Database Client Library. You can use the Elastic Database Splitc-Merge tool to split and merge sharded databases.
+
+# Evaluate migration scenarios to SQL Database Managed Instance
+
+Azure SQL Database managed instance is designed to host existing databases in the cloud by providing almost 100% compatibility with on-premises versions of SQL Server.
+
+## What is Azure SQL Database managed instance?
+
+Azure SQL Database managed instance is the newest SQL-based PaaS capability that's part of the Azure SQL Database. The goal of Managed Instance is to provide SQL Server applications with a fully managed PaaS in the Azure cloud. It's also a fully featured SQL with all the critical features and capabilities of the SQL Server platform.
+
+Managed Instance is designed to enable a "lift and shift" solution. Previously, without Managed Instance, migration scenarios where an organization's application required acces to any technology outside the database (SQL Agent jobs, cross database joins, SQL Server Integration Services) would be prevent from moving to the cloud. The only way to migrate an on-premises would be:
+- Move the database and supporting technologies to IaaS model.
+- Rewrite the application, with additional development to addres migration blockers.
+
+### Key features
+
+- Backwards compatibility - Managed instance provides backward compatibility to SQL Server 2008. Direct migration from SQL Server 2005 is also supported, with the compatibility level for migrated SQL Server 2005 being updated to SQL Server 2008. It aslo provides access to newer technologies, by using compatibility lever 150, which enables additional capabilities.
+- Easy lift and shift - Managed instance has close to 100% compatibility to SQL Server. This compatibility includes core SQL Server components, programmability enhancements, instance-scoped features, database join, and management tools. It enable database migration to a fully managed database service, without redesigning the application.
+- Fully managed PaaS - benefits include removing the need for managing hardware and. You also have the benefits to quickly scaling up and down, and provisioning resources in the cloud. SQL Server operating system is maintained by PaaS with automated patching and version upgrades.
+- Security features - You can enable Advanced Data Security featuresat the managed instance scope. These include Vulnerability Assessment and Advance Threat Protection. Advanced Threat Detection periodic sceans and send security reports to administrators. You can configure Transparent Data Encrytion (TDE) and whether you want to bring your own key (BYOK) for encryption.
+- Secure network isolation - managed instance has complete security isolation from any other tenant in the Azure cloud. managed instance is tipically solely exposed though a private IP address that only allows connectivity from private Azure networks or hybrid networks.  For on-premises applications to connect, you'd need an Azure ExpressRoute or a VPN.
+- Instance failover groups - a set of databases managed by a single database server, or within a single managed instance, that can fail over as a unit to another region. You use instance failover groups when all or some of the primary databases have gone offline due to an outage.
+
+## Migration tools
+
+- Microsoft Planning and Assessment - use this tool in the discovery stage to confirm the source environment that you're migrating from. It gets the configuration of your source SQL Server, how many instances are installed, the components running on each instance and the version and configuration of the Windowns Server that it's running on.
+- Azure Database Migrate Service - helps you do large-scale database migrations from within the Azure portal. It integratios some of the functionality of existing tools and services
+  - Database Migration Assistant
+  - SQL Server Migration Assistant
+  - Data Experimentation Assistant
+- Data Migration Assistant - use this tool in the planning and assessment stage to check for compatibility issues that impact database functionality in managed instance. Alos you can use to review performance and reliability improvements for a target environment before you do the migration.
+- Database Experimentation Assistant - assess if your target server can handle the workloads that it will operate.  you can use the analysis metricts to give comparison data of upgrading from earlier SQL Server versions to a more recent version. This data helps to make decisions on whether the target version would provide a better experience after a migration.
+
+## Migration Planning
+
+A database migration project is often involved and complex. Consider the following issues before you migrate
+
+### Licensing
+Six types of subscription models are used for  Managed instance
+
+- Enteprise Agreement (EA)
+- Pay-as-you-go
+- Cloud Service Provider (CSP)
+- Enterprise Dev/Test
+- Pay-as-you-go Dev/Test
+- Subscription with monthly Azure credit for Visual Studio subscribers
+
+### Managed instance sizing
+
+| | Gen4 | Gen5 |
+|-| ---- | ---- |
+| Hardware | Intel E5-2673 v3 (Haswell) 2.5 GHz processors, attached SSD vCore = 1 physical core | Intel E5-2673 v4 (Broadwell) 2.3 GHz processors, NVMe SSD, vCore = 1 LP (hyper thread) |
+| vCores | up to 24 | up to 80 |
+| Memory | 7 GB per vCore | 5.1 GB per vCore |
+| Max OLTP memory | 3 GB per vCore | 2.5 GB per vCore |
+| Max instance storage (General purpose) | 8 TB | 8 TB |
+| Max instance storage (Business Critical) | 1 TB | 1 TB, 2 TB, 4 TB depending on the number fo core |
+
+### Database compatibility
+
+To support older databases on new versions of the database engine, SQL Server uses database compatibility levels. Indentify the latest supported compatibility level of the application that's using SQL Server. Match to the compatibility level of the database that the application queries. SQL Server 2000 has a compatibility level of 80, and each next version of SQL Server has +10 compatibility by default, up to 150 for SQL Server 2019.
+
+SQL Server 2017 supports compatibility levels from 100 (default for SQL Server 2008) to 140 (default for SQL Server 2017). If your application requires compatibility level 100, and you use SQL Server 2014, you can safely move to SQL Database managed instance. But if you use an application with compatibility level 80, running on SQL Server 2008, you can't move it to Managed instance as it supports compatibility levels of 100 and newer. In this situation, you'll have to migrate from compatibility level 80 to 100 before you can move the database to Azure Database managed instance.
+
+### Networking
+
+Azure SQL Database managed instance must be deployed within an Azure virtual network, with the subnet dedicated to managed instances only. Managed instance is fully isolated. The compute and storace are placed in a virtual cluster that's fully isolated from all other tenants in Azure.
+
+Connect your on-premises resources using VPN or ExpressRoute to Managed instances. You can then use these instances as any others in your network. By connecting on-premises resources to managed instances, you use managed instance as an extension of your on-premises datacenter.
+
+If you have any back-end or front-end subnets in your on-premises network, you can establish VNET-to-subnet connections between them. You then use SQL connections from you web applications or link Azure managed instance to your on-premises database. Managed instance becomes just an extension to your on-premises SQL solution and your organization's on-premises network.
+
+### Application location
+
+Leaving applications on-premises, when the database is in Azure, will cause latency issues. Consider moving your applications to Azure to keep them close to the database.
+
+### Automated backups
+
+Managed instance automatically creates database backups that are kepts between 7 and 35 days. Azure RA-GRS is used to make sure they're preserved, even if the datacenter is unavailable. If you need backup to be available for an extended period (up to 10 years), you can configure long-term retention on a single database.
+
+SQL Database creates full backups weekly, differential backups every 12 hours, and transaction log backups every 5-10 minutes. The backups are stored in RA-GRS storage blobs that are replicated to a paired datacenter for protection against an outage. When you restore a database, the service figures out which full, differential, and transaction logs backups need to be restored.
+
+COPY_ONLY backup is the only manual method that's allowed. The transaction log must be preserved for automated backup operations and point-in-time restore operations in managed instance.
