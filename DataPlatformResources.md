@@ -811,6 +811,7 @@ There are a number of traditional, more manual approaches to migrating databases
 - Zone redundancy via availability zones
 
 ### Disaster recovery
+
 - Geo-restore of database backup
 - Active-geo replication between Azure regions
 
@@ -829,6 +830,7 @@ There are a number of traditional, more manual approaches to migrating databases
 - Firewall allowlist
 
 ### Licensing
+
 - DTU purchasing model for predictive costing
 - vCore purchasing model, enabling storage to be scaled independently of compute
 - Combine the vCore model with Azure Hybrid Benefit for SQL Server to realize cost saving of up to 30%
@@ -905,7 +907,7 @@ Azure portal only supports creating a single database in Azure SQL Database, and
 
 You could also use SqlPackage to import a BACPAC file as it's more performant than using the Azure portal
 
-```
+```SQL
 SqlPackage.exe /a:import /tcs:"Data Source=<Azure SQL Database Server name>.database.windows.net;Initial Catalog=<New Database name>;User Id=<your_server_admin_account_user_id>;Password=<your_server_admin_account_password>" /sf:<Local Database name>.bacpac /p:DatabaseEdition=<Service tier> /p:DatabaseServiceObjective=<Service Objective Tier>
 ```
 
@@ -1094,3 +1096,335 @@ Managed instance automatically creates database backups that are kepts between 7
 SQL Database creates full backups weekly, differential backups every 12 hours, and transaction log backups every 5-10 minutes. The backups are stored in RA-GRS storage blobs that are replicated to a paired datacenter for protection against an outage. When you restore a database, the service figures out which full, differential, and transaction logs backups need to be restored.
 
 COPY_ONLY backup is the only manual method that's allowed. The transaction log must be preserved for automated backup operations and point-in-time restore operations in managed instance.
+
+## Migrate to SQL  Database Managed Instance
+
+### Evaluating Azure SQL Database managed instance compatibility
+
+Features such as cross-databases queries, cross-database transactions within the same instance, linked servers, CLR, global temp tables, instance level views, Service Broker and more aren't supported on Azure SQL Database. However, these features are supported with SQL Database managed instance.
+
+#### Data Migration Assistant
+
+Use DMA to detect potential compatibility issues that impact database functionality. DMA provides the ability to do a migration assessment, and exectue a migration project. From DMA 4.3, DMA supports managed instance as an assessment option, and a migration destination.
+
+#### Running a Data Migration Assessment
+
+1. Open Data Migration Assistant.
+2. Choose Assessment as the project type
+3. Select source and target server type
+4. Click Create
+5. Select the report types
+   - Check database compatibility - discover migration blocking issues and deprecated features
+   - Check feature parity - discover unsupported or partially supported features and functions that your applications may rely on. Get guidance around these areas
+   - Benefit from new features - Discover new SQL features that are applicable once migrated
+6. Connect to you source system
+7. Choose the databases you want to analyze
+8. Click Start Assessment
+9. When you get the output, there's the option to examine feature parity and the compatibility issues.
+
+#### Migrate using backup and restore from the URL
+
+If you can accept downtime, the restore of a database from a URL is a valid method for an offline migration.
+
+##### Restore the database from a backup file
+
+1. Open SQL Server Management Studio (SSMS) and connect to your managed instance
+2. right-click your managed instance and select New Query
+3. Run the T-SQL command, which uses a preconfigured storage account and key to create a credential in your managed instance:
+
+  ```SQL
+    CREATE CREDENTIAL [https://mtutorials.blob.core.windows.net/databases]
+      WITH IDENTITY = 'SHARED ACCESS SIGNATURE'
+      SECRET = '<secret>'
+  ```
+
+4. Check your credential
+  
+   ```SQL
+   RESTORE FILELISTONLY FROM URL = 'https://mtutorials.blob.core.windows.net/databases/dbbu.bak'
+   ```
+
+5. Restore the database
+
+  ```SQL
+  RESTORE DATABASE [<database name>] FROM URL = 'https://mtutorials.blob.core.windows.net/databases/dbbu.bak'
+  ```
+
+6. Track restore's status
+
+  ```SQL
+  SELECT session_id as SPID, command, 
+   a.text AS Query, start_time, percent_complete, 
+   dateadd(second,estimated_completion_time/1000, 
+   getdate()) as estimated_completion_time
+  FROM sys.dm_exec_requests r
+  CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) a
+  WHERE r.command in ('BACKUP DATABASE','RESTORE DATABASE')
+  ```
+
+#### Managing encrypted databases
+
+Transparent Data Encryption (TDE) is a SQL Server technology that ensures databases are encrypted at rest. These databases can only be read when the certificate used to encrypt the data is used to decrypt the database and database backups at the destination. When you migrate a database protected by TDE to a managed instance using native restore, the certificate from the on-premises SQL Server must be migrated before databes restore.
+
+To address TDE enabled databases, you can either use Azure Database Migration Service (DMS) or manually decrypt the database backups using a certificate export tool and PowerShell.
+
+##### Manually migrate the certificate
+
+To migrate the certificate you'll need:
+
+- Pvk2Pfx - command-line tool that you install on the on-premises server. It requires access to the certificate exported file.
+- Windows PowerShell - version 5.0 or higher
+- Az.Sql PowerShell module
+
+##### Export TDE certificate
+
+1. To locate the certificate details on the SQL Server, open SSMS, and open a New Query, and connect to the source SQL Server
+2. Run the T-SQL command to list TDE protected databases and get the name of the certificate
+
+   ```SQL
+   USE master
+   GO
+
+   SELECT db.name as [database_name], cer.name as [certificate_name] 
+  FROM sys.dm_database_encryption_keys dek 
+  LEFT JOIN sys.certificates cer ON dek.encryptor_thumbprint = cer.thumbprint 
+  INNER JOIN sys.databases db ON dek.database_id = db.database_id 
+  WHERE dek.encryption_state = 3
+  ```
+
+3. Back up the TDE certificate
+
+  ```SQL
+  USE master 
+  GO 
+  BACKUP CERTIFICATE TDE_Cert 
+  TO FILE = 'c:\full_path\TDE_Cert.cer’ 
+  WITH PRIVATE KEY ( 
+      FILE = 'c:\full_path\TDE_Cert.pvk’, 
+      ENCRYPTION BY PASSWORD = '<SomeStrongPassword>’ 
+  )
+  ```
+
+4. Copy the certificate to a Personal Information Exchange (.pfx)
+
+  ```POWERSHELL
+  .\pvk2pfx -pvk c:/full_path/TDE_Cert.pvk  
+    -pi "<SomeStrongPassword>" 
+    -spc c:/full_path/TDE_Cert.cer 
+    -pfx c:/full_path/TDE_Cert.pfx
+  ```
+
+5. Prepare the certificate for upload
+
+  ```POWERSHELL
+  # Import the module into the PowerShell session
+  Import-Module Az
+  # Connect to Azure with an interactive dialog for sign-in
+  Connect-AzAccount
+  # List subscriptions available and copy id of the 
+  # subscription target managed instance belongs to
+  Get-AzSubscription
+  # Set subscription for the session (replace 
+  # Guid_Subscription_Id with actual subscription id)
+  Select-AzSubscription Guid_Subscription_Id
+  ```
+
+6. Upload the certificate to the managed instance
+
+  ```POWERSHELL
+  $fileContentBytes = 
+      Get-Content 'C:/full_path/TDE_Cert.pfx' 
+      -Encoding Byte
+  $base64EncodedCert = 
+      [System.Convert]::ToBase64String($fileContentBytes)
+  $securePrivateBlob = $base64EncodedCert  |
+      ConvertTo-SecureString -AsPlainText -Force
+  $password = "SomeStrongPassword"
+  $securePassword = $password | 
+      ConvertTo-SecureString -AsPlainText -Force
+  Add-AzSqlManagedInstanceTransparentDataEncryptionCertificate -ResourceGroupName "<ResourceGroupName>" 
+      -ManagedInstanceName "<ManagedInstanceName>" 
+      -PrivateBlob $securePrivateBlob 
+      -Password $securePassword
+  ```
+
+#### Creating the Azure Database Migration Service
+
+DMS is a fully managed service designde to enable migrations from multiple database sources to Azure. This service sreamlines the tasks required to move existing third-party and SQL Server databases to Azure. DMS is free and supports migrations of different databases such as MySQL, PostgreSQL, MariaDB to Azure.
+
+The service uses DMA to generate assessment reports that provide recommendations to guide you through the changes required before migration. It's up to you to do any remediation.
+
+##### Register Microsoft.DataMigration resource provider
+
+1. Sign in to Azure portal, and select Subscriptions
+2. Select Resource providers
+3. Search for Migration, and then Microsoft.DataMigration, select Register
+  
+To use the Azure Database Migration Service, you must create a migration project and configure its details, such as the source database.
+
+##### Configure migration settings
+
+1. On the Configure migration settings, provide the details:
+   - SMB network location share - The local SMB network share that contains the full database backups files and transaction log backu files
+   - User name - Windows user with full control privilege no the SMB network share
+   - Passwork
+   - Subscription of the Azure Storage Account
+   - Azure Storage Account - storage account where DMS can upload the backup files from the SMB network share
+
+2. Save
+
+##### Perform migration cutover
+
+After the full database backup is restored on the target managed instance, the database is available for a migration cutover
+
+1. Select Start Cutover
+2. Stop all incoming traffic to source databases.
+3. Take the tail-log backup, make the backup file available in the SMB network share, and then wait until this final transaction log backup si restored
+4. you'll see Pending changes set to 0
+5. Select Confirm and Apply
+6. When database migration status show Completed, connect your applications to the new managed instance
+
+## Load and Move data to SQL Database Managed Instance
+
+Many migrations involve a period when the on-premises and the cloud database must be kept synchronized. For example, there might be a time when clients make changes to both databases.
+
+### Connectivity options with on-premises serves
+
+Before you choose a data synchronization methoud, it's important to ensure you have connectivity that's secure. There are three different connectivity options to establish communication between computers on-premises and resources in Azure.
+
+- Point-to-Site (P2S) - lets you create a secure connection to your virtual network from an individual client computer.
+- Site-to-Site - used to connect an entire on-premises site to the Azure network.
+- ExpressRoute - enables to create private connections between Azure datacenters and on-premises infrastructure, or infrastructure in a colocation environment. ExpressRoute don't go over the public internet, and offer more reliability, faster speeds, lower latencies, and higher security than typical internet connections.
+
+### Azure SQL Database managed instance public endpoint secure access
+
+Public endpoint for managed instance helps you to connect to the database from the internet without using a VPN, and is designed for data communication only. Public and private endpoint can simultaneously coexist. For security reasons, the implementation allows for Separation of Duties (SoD) between a database administrator and a network administrator when enabling the public endpoint.
+
+To enable public endpoint for managed instance, two steps are required. For SoD, you'll need two separate roles, with database and network permissions:
+
+1. A database administrator who has RBAC permissions in scope Microsoft.Sql/managedInstances/* must run a PowerShell script to enable public endpoint for managed instance.
+2. A network administrator who has RBAC permissions in scope Microsoft.Network/* must open the port 3342 used by the public endpoint on the network security group (NSG), and provide a UDR route to avoid asymmetric routing.
+![public endpoint](images/public-endpoint.png)
+
+### Choosing a synchronization method
+
+Althought you could use backup and restore to move data from the could to on-premises databases, this isn't supported by Microsoft because managed instance is always at the latest version. You can't restore backups from the latest version of SQL Server to an earlier version.
+
+#### BACPAC file using SqlPackage
+
+A BACPAC file is simply a zipped version of your metadata and the data from your database. You can use this deployment methoud for Azure SQL Database, but managed instance doesn't support a migration using BACPAC in the Azure portal. Insted, you must use the SqlPackage utility.
+
+#### Bulk Copy Program (BCP)
+
+BCP is a command-line tool that exports tables to files so you can import them. Use this approach to migrate from a single Azure SQL Database to Azure SQL managed instance an back.
+
+#### SQL Server Integration Service (SSIS)
+
+SSIS in primarily used for ETL tasks, but its control flow is robust enough to create a system level execution engine. The data flow is powerful enough to handle any volume of data transformation and manipulation tasks with auditing, debugging, and full source control support.
+
+#### Azure Data Factory (ADF)
+
+ADF is built for data movement and orchestration, with the focus on ingestion. ADF has the integration runtime support to run SSIS packages, and the public internet support for SQL Database managed instance.
+
+#### Transactional replication
+
+Transactional replication can copy data from your managed instance to any SQL Server. It's a convenient approach for migrating data to and from a managed instance.
+
+#### Import and export data with a BACPAC file
+
+When you need to export database for archiving or for moving to another platform, you can export the database schema and data to a BACPAC file. It's a zip file that contains the metadata and data from a SQL Server database. It can be stored in Azure Blob storage or in an on-premises location. The file can be imported back into Azure SQL Database or a SQL Server on-premises. Use this methoud to restore SQL Server databases to Azure SQL Database, and Azure SQL on VM.
+
+Managed instance doesn't support migrating a database into an instance database from a BACPAC file using the Azure portal. You must use the SqlPackage utility. SSMS and SQL Server Data Tools have the latest version of SqlPackage.
+
+##### SqlPackage exports
+
+```CMD
+SqlPackage.exe /a:import 
+    /tcs:"Data Source=<target Azure database name>.database.windows.net;
+      Initial Catalog=<new database name>;User Id=Admin;Password=<password>"
+    /sf:<source database name>.bacpac 
+    /p:DatabaseEdition=Premium 
+    /p:DatabaseServiceObjective=P6
+```
+
+##### SqlPackage imports
+
+1. Download and run the DacFramework.msi installer
+2. Open a CMD
+
+    ```CMD
+    cd C:\Program Files\Microsoft SQL Server\150\DAC\bin
+    ```
+
+3. Run
+
+  ```CMD
+  sqlpackage.exe /a:Import 
+  /TargetServerName:destinationdb.appname.database.windows.net 
+  /TargetDatabaseName:dbname /TargetUser:admin 
+  /TargetPassword:<password> 
+  /SourceFile:C:\Users\user\Desktop\backup150.bacpac
+  ```
+
+#### Synchronizing data using SSIS or Azure Data Factory
+
+SSIS has long been the ETL tool of choice for migrating data from point A to B. SSIS has powerful control flow and data flow capabilities with near limitless amounts of data manipulation, many data transformation options, the ability to execute in parallel, and other features. You can still run SSIS packages from SQL Server on-premises and from SQL Server VM
+
+Azure Data Factory is fully managed data-integration-as-a-service in the cloud. The managed compute infrastructure provides data connectors, data conversions, and columnt-mapping transformations. This infrastructure also has activity dispatching to run and monitor activities in other services like Azure Databricks and HDInsight.
+
+##### Which technology should you use ?
+
+You can continue using SSIS packages and have them run in the cloud by using Azure Data Factory. You could create a new Azure Data Factory pipeline to execute you data movements.
+
+##### SSIS Catalog considerations
+
+Hosting the SSIS catalog database in Azure SQL Database, with virtual network service endpoints, or in managed instance. This way, you can join your Azure-SSIS Integration Runtime (IR) to:
+
+- The same virtual network
+- A different network that has a network-to-network connection with the managade instance network.
+
+If you host your SSIS catalog in Azure SQL Database with virtual network service endpoints, make sure you join your Azure-SSIS IR to the same virtual network and subnet. When you join your Azure-SSIS Ir to the same virtual network as the managed instance, ensure that the Azure-SSIS IR is in a different subnet to the managed instance.
+
+If you join your Azure-SSIS IR to a different network than the managed instance, we recommend either virtual network peering, or a virtual network to virtuarl network connection. The virtual network can only be deployed through the Azure Resource Manager deployment model.
+
+##### Network security group
+
+If you need to implement a NSG for the subnet used by your Azure-SSIS IR, allow inbound and outbound traffic through TCP ports (1433, 11000-11999, 14000-14999). This is because the nodes of your Azure-SSIS IR in the virtuanl network use these ports to access SSIS DB hosted by your Azure SQL Database server. This requirement isn't applicable to SSISDB hosted by managed instance.
+
+#### Synchonizing data with transactional replication
+
+Transaction replication enables you to replicate data into an Azure SQL Database managed instance from a SQL Server database. You can also use transactional replication to push changes made in a database in Azure SQL managed instance to a SQL Server database. Managed Instance is flexible because it can be a publisher, distributor, and subscriber.
+
+One of the use cases for transactional replication with Managed instnace is the ability to migrate databases from one SQL Server or managed instance to another database by continously publishing the changes. you have a publisher that has the source data. 
+Replication is one of the few technologies that allows you to replicate parts of a table. We refer to these table parts as "articles". This data is then sent to a distributor, which is a supplier of teh data to any number of subscribers.
+
+Managed instance supports the replication types:
+
+- Transactional
+- Snapshot
+- One-way
+- Bidirectional
+
+##### Troubleshooting
+
+One of the most common issues when setting up replication with Managed instance is the network security layer. Managed instance is secure by default, so most ports and protocols can't access the managed instance virtual network. You need proper security access to ensure that replication components communicate with each other effectively. The distributor can be a Managed instance, but it must be a version equal to, or higher than ,t he configured publisher.
+
+Requirements:
+
+- Connectivity uses SQL Authentication between replication participats
+- Storage Account share for the working directory used by the replication
+- Open port 445 (TCP Outbound) in the NSG of the Managed instance subnet to access the file share
+- Open port 1433 (TCP Outbound) if the publisher or distributor is on a Managed inistance and the subscriber is on-premises
+
+#### Connecting applications to a managed instance
+
+Managed instance must be placed inside an Azure virtual network subnet that's dedicated to managed instances. This deployment gives you a secure private IP address and the ability to connect to on-premises networks.
+
+Users and client applications can connect the Managed instance through Azure portal, PowerShell, Azure CLI, REST API
+
+Managed instances depend on Azure Services such Azure Storage for backups, Azure Event Hubs for telemetry, Azure Active Directory for authentication, Azure Key Vault for TDE. The managed instance make connections to these services.
+
+All communications are encrypted and signed using certificates. To check the trustworthiness of communicating parties, managed instances contantly verify these certificates through certificate revocation lists. If the certificates are revoked, the managed instance closes the connections to protect the data.
+
+![managed instance connection](images/managed-instance-connection.png)
+s
