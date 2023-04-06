@@ -558,3 +558,392 @@ In order to configure Key Vault integration, you need to set the Key Vault URL, 
 Configuring SQL Server to connect to Key Vault requires creating a normal SQL Server Login within the instance, a credential needs to be created and mapped to the login. For the identity of the credential, the name of the key vault should be used. For the secret of the credential, use the application ID from Azure Key Vault
 
 Once the credential is created, an asymmetric key can be created within the Azure Key Vault. An asymmetric key can be created within the SQL Server database. The key in database can be mapped to the Azure Key Vault asymmetric key using the ```CREATE ASYMMETRIC KEY``` with the ```FROM PROVIDER```. Once an asymmetric key is created within the database, that key can be used for TDE, Backup Encryption or Always Encrypted.
+
+## Data classification
+
+Confidential data stored within SQL Server, should eb classified within the database. This classification allows users as well as other applications to know the sensivity of the data that is being stored.
+
+Data classification is done on a column by column basis. It is possible for a single table to have some columns be public, some columns be confidential, and some columns highly confidential.
+
+With SQL Server 2019 this metadata is stored in a catalog view called ```sys.sensitivity_classification```.
+
+You can access data classification by selecting Data Discovery and Classification, under Security section in the Azure portal.
+
+The classification engine scans the database and locates columns with names that indicate that the column could have sensitive information.
+
+Columns can also be classified using the sensitivity wizard in SSMS or by using ```ADD SENSIVITY CLASSIFICATION``` T-SQL
+
+```
+ADD SENSITIVITY CLASSIFICATION TO
+    [Application].[People].[EmailAddress]
+WITH (LABEL='PII', INFORMATION_TYPE='Email')
+
+GO
+```
+Classification of data allows to easily identify the sensitivity of data. Knowing what columns contain sensitive data allows for easier audits and to more easily identify columns for data encryption.
+
+### Customize classification
+
+Data Discovery & Classification is part of Microsoft Defender for Cloud. You can customize the taxonomy of sensitivity lobels and define a set of classification rules.
+
+You can create and manage sensivity labels as part of policy management by selecting Data Discovery and Classification and then Configure.
+
+Once you define patterns, they are added automatically to the discovery logic.
+
+Only users with administrative rights on the organization's root manaagement group can create and manage sensitivity labels.
+
+## Server and database audit
+
+Azure SQL auditing tracks database events and writes them to an audit log in Azure Storage account, Log Analytics workspace or Event Hubs. It enables to maintain regulatory compliance, analyze activity patterns, and identify deviations that may indicate security violations.
+
+You can define server-level and database-level policies. Serever policies automatically cover new and existing databases
+
+- If server auditing is enabled, the database will be audited, regardless of the database settings
+- You can also enable it on the database. This allows both audits to exist simultaneously.
+
+It is best not to enable both, unless:
+
+- A different storage account, retention period or Log Analytics Workspace is used for a specific database
+- An audit is needed for a specific database that differs from the rest on the server.
+
+For all other cases, is recommended to enable only server-level auditing.
+
+| Action group | Definition |
+| ------------ | ---------- |
+| BATCH_COMPLETED_GROUP | Audits all the queries and stored procedures executed against the database |
+| SUCCESSFUL_DATABASE_AUTHENTICATION_GROUP | Indicates that a principal succeed to log into the database. |
+| FAILED_DATABASE_AUTHENTICATION_GROUP | Indications that a principal failed to log into the database |
+
+To enable auditing, select Auditing in the Security section. The Auditing page allows to set the audit log destination and whether track Microsoft support engineer operations no the same log destinantion.
+
+You can review the audit logs of Microsoft Support operations in your Analytics workspace:
+
+```
+AzureDiagnostics
+| where Category == "DevOpsOperationsAudit"
+```
+
+The auditing services are optimized for availability and performance. SQL Server may not record some audited events when there is a high rate of activity or high network load.
+
+Auditing on Read-ONly replicas is automatically enabled.
+
+### Audit sensitive labels
+
+When combined with data classification, you can also monitor access to sensitive data. Auditing han been enhanced to include a new field in the audit log called ```data_sensitivity_information```
+
+Auditing consists of tracking and recording events that occur in the database engine.
+
+## Dynamic Data Masking
+
+Dynamic Data Masking works by obfuscating data in order to limit its exposure. Users who donot need to see sensitivy data can view the column that contains the data, but no the actual data itself. Dynamic Data Masking works at the presentation layer, and that unmasked data will always be visible by high privileged users.
+
+Dynamic Data Masking has the advantage that it doesn't require many modifications to the application or database.
+
+```
+ALTER TABLE [Application].[People] ALTER COLUMN [PhoneNumber] ADD MASKED WITH (FUNCTION = 'partial(0, "XXX-XXX-", 4)`)
+```
+
+In addition to  T-SQL, if you are using Azure SQL DB, you can create dynamic masking rules in the Azure portal.
+
+Dynamic Data Masking suppots the following masking patterns:
+
+| Making function | Definition | T-SQL example |
+| --------------- | ---------- | ------------- |
+| Default | Masks the data in the column without exposing any part of the values to the user. The user would see XXXX for string values, 0 for numbers, and 01.01.1900 for date values. | ALTER TABLE [Customer] ALTER COLUMN Address ADD MASKED WITH (FUNCTION = 'default()') |
+| Credit card | Masks all but the final four characters, allowing users to view the final four digits. This masking can be useful for customer service agents who need to view the last four digits of a credit card number but who do not need to see the entire number. The data is shown in the usual format of a credit card number XXXX-XXXX-XXXX-1234. | ALTER TABLE [Customer] ALTER COLUMN Address ADD MASKED WITH (FUNCTION = 'partial(0,"XXXX-XXXX-XXXX-",4)') |
+| Email | Only the first letter and the trailing domain suffix are not masked; for example, “aXXX@XXXXXXX.com
+" | ALTER TABLE [Customer] ALTER COLUMN Email ADD MASKED WITH (FUNCTION = 'email()') |
+| Number | This masking format should be used on numeric columns. It shows a random number as the masked value instead of the actual value. With each query, a different number is displayed. | ALTER TABLE [Customer] ALTER COLUMN [Month] ADD MASKED WITH (FUNCTION = 'random(1, 12)') |
+| Custom string | This option allows text to be masked with any value, and to display a custom number of characters at either end of the masked value. If the length of the value being masked is equal to or less than the number of characters which the mask specifies are to be displayed, then only the masked characters are displayed. | ALTER TABLE [Customer] ALTER COLUMN [PhoneNumber] ADD MASKED WITH (FUNCTION = 'partial(1,"XXXXXXX",0)') |
+
+To enable users to retrieve unmasked data from the columns, you need to explicitly grant ```UNMASK``` permission.
+
+It is possible to identify masked data using inference based on the results. If you are using data masking, you should also limit the ability of the user to run ad hoc queries. For that reason it is highly recommended to use dynamic data masking in conjunction with other security features, such as auditing, encryption, row level security in order to better protect sensitive data.
+
+### Use case
+
+Data masking is a simple and lightweight feature:
+
+- Mask data from application users who have no direct access to the database
+- Restricting private information for a group of users
+- Provide masked data to external vendors, where you need to protect sensitive information while still preserving the relationship among items in the data
+- Export a copy of your production database to a lower environment to a lower environment for development purpose with a user who doesn't have ```UNMASK``` permission. The export of the data will be in a masked format.
+
+### Import and export data
+
+Copying data from a masked column to another table using ```SELECT INTO``` or ```INSERT INTO``` results in masked data in the target table. 
+When a user without ```UNMASK``` privilege runs SQL Server Import and Export, the exported data file will contain masked data, and the imported database will contain inactively masked data.
+
+## Row level security
+
+Row-level security (RLS) doesn't use encryption and operates at the database level to restrict access to a table by using a security policy based on group membership or authorization context. This functionally is equivalent to a ```WHERE``` clause.
+
+The security policy invokes an inline table-valued function to protect access to the rows in a table
+
+Depending on the attribute of a sure, the predicate determines if that user has to the relevant information. When you run a query against a table, the security policy applies the predicate function.
+
+There are two types of security policies supported by row-level security
+
+Filter predicates - restrict data access that violates the predicate
+
+| Access | Definition |
+| ------ | ---------- |
+| SELECT | Can't view rows that are filtered |
+| UPDATE | Can't update rows that are filtered |
+| DELETE | Can't delete rows that are filtered |
+| INSERT | Not Applicable |
+
+Block predicates - restrict data changes that violate the predicate
+
+| Access | Definition |
+| AFTER INSERT | Prevent users from inserting rows with values that violate the predicate |
+| AFTER UPDATE | Prevents users from updating rows to values that violate the predicate |
+| BEFORE UPDATE | Prevents users from updating rows that currently violate the predicate |
+| BEFORE DELETE | Blocks delete operations if the rows violates the predicate |
+
+Because access control is configured and applied at the database level, application changes are minimal. Users can directly have access to the tables and can query their own data.
+
+Row-level security is implemented in three main steps:
+
+1. Create the users or groups you want to isolate access
+2. Create the inline table-valued function that will filter the results based on the predicate defined
+3. Create a security policy for the table, assigning the function created above.
+
+```
+-- Create supporting objects for this example
+CREATE TABLE [Sales] (SalesID INT, 
+    ProductID INT, 
+    TenantName NVARCHAR(10), 
+    OrderQtd INT, 
+    UnitPrice MONEY)
+GO
+
+INSERT INTO [Sales]  VALUES (1, 3, 'Tenant1', 5, 10.00);
+INSERT INTO [Sales]  VALUES (2, 4, 'Tenant1', 2, 57.00);
+INSERT INTO [Sales]  VALUES (3, 7, 'Tenant1', 4, 23.00);
+INSERT INTO [Sales]  VALUES (4, 2, 'Tenant2', 2, 91.00);
+INSERT INTO [Sales]  VALUES (5, 9, 'Tenant3', 5, 80.00);
+INSERT INTO [Sales]  VALUES (6, 1, 'Tenant3', 5, 35.00);
+INSERT INTO [Sales]  VALUES (7, 3, 'Tenant4', 8, 11.00);
+
+-- View all the rows in the table  
+SELECT * FROM Sales;
+
+CREATE USER [TenantAdmin] WITH PASSWORD = '<strong password>'
+GO
+CREATE USER [Tenant1] WITH PASSWORD = '<strong password>'
+GO
+CREATE USER [Tenant2] WITH PASSWORD = '<strong password>'
+GO
+CREATE USER [Tenant3] WITH PASSWORD = '<strong password>'
+GO
+CREATE USER [Tenant4] WITH PASSWORD = '<strong password>'
+GO
+
+GRANT SELECT ON [Sales] TO [TenantAdmin]
+GO
+GRANT SELECT ON [Sales] TO [Tenant1]
+GO
+GRANT SELECT ON [Sales] TO [Tenant2]
+GO
+GRANT SELECT ON [Sales] TO [Tenant3]
+GO
+GRANT SELECT ON [Sales] TO [Tenant4]
+GO
+
+CREATE SCHEMA sec;  
+GO  
+
+--Create the filter predicate
+
+CREATE FUNCTION sec.tvf_SecurityPredicatebyTenant(@TenantName AS NVARCHAR(10))  
+    RETURNS TABLE  
+WITH SCHEMABINDING  
+AS  
+    RETURN	SELECT 1 AS result
+			WHERE @TenantName = USER_NAME() OR USER_NAME() = 'TenantAdmin';  
+GO
+
+--Grant users access to inline table-valued function
+
+GRANT SELECT ON sec.tvf_SecurityPredicatebyTenant TO [TenantAdmin]
+GO
+GRANT SELECT ON sec.tvf_SecurityPredicatebyTenant TO [Tenant1]
+GO
+GRANT SELECT ON sec.tvf_SecurityPredicatebyTenant TO [Tenant2]
+GO
+GRANT SELECT ON sec.tvf_SecurityPredicatebyTenant TO [Tenant3]
+GO
+GRANT SELECT ON sec.tvf_SecurityPredicatebyTenant TO [Tenant4]
+GO
+
+--Create security policy and add the filter predicate
+CREATE SECURITY POLICY sec.SalesPolicy  
+ADD FILTER PREDICATE sec.tvf_SecurityPredicatebyTenant(TenantName) ON [dbo].[Sales]
+WITH (STATE = ON);  
+GO
+
+EXECUTE AS USER = 'TenantAdmin';  
+SELECT * FROM dbo.Sales;
+REVERT;  
+  
+EXECUTE AS USER = 'Tenant1';  
+SELECT * FROM dbo.Sales;
+REVERT;  
+  
+EXECUTE AS USER = 'Tenant2';  
+SELECT * FROM dbo.Sales;
+REVERT;
+
+EXECUTE AS USER = 'Tenant3';  
+SELECT * FROM dbo.Sales;
+REVERT;
+
+EXECUTE AS USER = 'Tenant4';  
+SELECT * FROM dbo.Sales;
+REVERT;
+```
+
+There is a risk of information leakage if an attacker writes a query with a specially crafted ```WHERE``` clause and, for example , a divide-by-zero error, to force an exception if the ```WHERE``` condition is true. This is known as a side-channel attack. It is wise to limit the ability of users to run ad hoc queries when using row-level security.
+
+### Use case
+
+- When you need to isolate department access at the row level
+- When you need to restrict customer's data access to only the data relevant to their company
+- When you need to restrict access for compliance purposes
+
+### Best practice
+- It's recommended to create a separate schema for predicate functions, and security policies
+- Whenever possible, avoid type conversions in predicate functions
+- To maximize performance, avoid using excessive table joins and recursion in predicate functions.
+
+## Microsoft Defender for SQL
+
+Microsoft Defender for SQL offers a suite of protections for Azure SQL DB and Managed Instance as part of the advanced SQL security features, including SQL vulnerability assessment and Advanced Threat Protection
+
+### SQL vulnerability assessment
+
+SQL vulnerability assessment is a service that uses a knowledge base of security rules to flag items that don't comply when they're scanned. It checks your database for security best practices, and providing visibility into your security state, such as misconfigurations, excessive permissions, and exposure of sensitive data.
+
+To see recommendations, you must enable Microsoft Defender for SQL at the subscription level. You also need to provide a storage account.
+
+The vulnerability assessment feature can detect potential risks in your environment, and enhance database security. It also provides insight into your security state and actionable steps to resolve security alerts.
+
+### Advanced Threat Protection
+
+Advanced Threat Protection monitors the database connections and the queries that are executed in order to detect potentially harmful activities.
+
+| Alerts | Definition |
+| ------ | ---------- |
+| Vulnerability to SQL injection | This alert looks for T-SQL code coming into your database that may be vulnerable to SQL injection attacks. An example would be a stored procedure call that didn't sanitize user inputs. |
+| Potential SQL injection | This alert is triggered when an attacker is actively attempting to execute a SQL injection attack. |
+| Access from unusual location | This alert is triggered when a user logs in from an unusual geographic location. |
+| Access from unusual Azure data center	| This alert is looking for attacks from an Azure data center that isn't normally accessed. |
+| Access from unfamiliar principal | This alert is raised when a user or applications log on to a database that they haven't previously accessed. |
+| Access from a potentially harmful application	| This alert detects common tools that are used to attack databases. |
+| Brute force SQL credentials | This alert is triggered when there a high number of log in failures with different credentials. |
+
+To get maximum benefit out of it you'll want to enable auditing on the databases. Enabling auditing will allow for deeper investigation into the source of the problem if Advanced Threat Protection detects an anomaly.
+
+### How to enable Microsoft Defender for SQL
+
+You must belong to either the SQL security manager role, or one of the database or server admin role to manage Microsoft Defender for SQL settings
+
+Enable Microsoft Defender for SQL from the main blade selection Microsoft Defender for Cloud and then the Configure.
+
+## Azure SQL Database Ledger
+
+The ledger feature provides tamper-evidence capabilities in your database. You can cryptographically attestto other parties, such as aditors or other business parties, that your data hasn't been tampered with
+
+### How it works
+
+Using the ledger feature of the Azure SQL DB, you can provide concrete proof to auditors, business partners or any  interested parties what data has been changed or tampered with.
+
+A traditional ledger is defined as a collection of accounts of a particular type. It provides transparent protection of your data from bad actors including but not limited to attackers or even database or cloud administrators. 
+
+Each transaction that the database receives is cryptographically hashed (SHA-256). The function cryptographically links all transactions together, like a blockchain.
+
+Azure Ledger function currently exists for tables in two forms: The Updatable ledger and the Append-only ledger.
+
+#### Updatable ledger tables
+
+Can be used for applications that issue updates, deletes and inserts. It works well for system of record applications and transactional systems where matter of fact record keeping and auditing is required and happen. The updatable ledger tables track history of changes to any rows and uses the built-in system versioning to create a history table that stores the previous version of the row for full history is kept for any updates or deletes.
+
+#### Append-only ledger tables
+
+Works well with insert only applications such as an accounting system, which still needs auditing or security information and event management (SIEM) applications. The append-only ledger tables blocks all updates and deletes at the API level so not only does it provide certainty, it aides in management.
+
+### Benefits
+
+- Ease Audits - audits are frquently enacted to ensure that proper security controls are in place to reducte potential attacks, bacup and restore practices are as required and thorough disaster recovery procedures are in place. Ledger provides documented proof that your data hasn't been altered.
+- Increased trust - can help establish trust between multiple-party business processes without the complexity and performance implications that network consensus can introduce
+- Data integrity - Querying the data on a blockchain network without socrificing performance can be a serious challenge. Ledger provides data integrity for off-chain storage of blockchain networks, which helps ensure complete data trust through the entire system.
+
+
+The setting "Enable for all future tables in this database" ensures that all future tables in the database will be ledger tables. For this reason, all data in the database will show any evidence of tampering. By default new tables will be created as updatale ledger tables, even if you don't specify ```LEDGER = ON``` in the ```CREATE TABLE```
+You can leave this option unselected. You're then required to enable ledger functionality on a per-table basis when you create new tables by using T-SQL
+
+## Azure Purview
+
+Microsoft Purview is a unified data governance service that helps you manage and govern you on-premises, multi-cloud, and SaaS data. Create a map of your data landscape with automated data discovery, sensitivy data classification, and end-to-end data lineage.
+
+### How it works
+
+Microsoft Purview automates data discovery by providing data scanning and classification as a service for assets across your data estate. Metadata and descriptions of discovered data assets are integrated into a map of your data estate. Atop this map, there are apps that create environments for data discovery, access management and insights about your data landscape
+
+### Create a unified map of data across the entire data domain
+
+- Automate and manage hybrid resource metadata
+- Classify data using integrated and custom classifications and information protection sensitivity labels
+- Ensure consistent labeling of sensitive data across SQL Server, Azure, Microsoft 365, Power BI
+- Easily integrate all your data systems using Apache Atlas APIs
+
+### Make data easy to find
+
+- Ensure optimal business value for your data user's data with Microsoft Purview Data Catalog
+- Eliminate the need for data dictionaries in Excel with a business-level business dictionary
+- Gain insight into the origin of your data with interactive visualization of data origin.
+- Provide data scientists, engineers, and analysts with the data they need for BI, analytics, AI, and machine learning.
+
+### Get an overview of sensitive data
+
+- View your entire data domain and its distribution by asset dimension, such as source type, classification, and file size
+- Receive status updates on the number of scans that passed, failed, or canceled.
+- Get key insights to add or redistribute glossary terms for better search results
+
+## Requirements
+
+- Access to Microsoft Azure
+- Ability to create Azure resources
+- Access to data sources
+  - For Data Lake Storage, the Reader role is required
+  - For Azure SQL, the identity must be able to query tables
+- Access to Microsoft Defender for Cloud or ability to collaborate with Defender for Cloud ADmin for data labeling
+- Active Microsoft Purview account
+- Data Source Administrator and Data Reader to register a source and manage it in the Microsoft Purview governance portal
+
+## Security considerations
+
+### Firewall settings
+
+- ALlow Azure connections through the firewall
+- Install self-hosted integration runtime - install a self-hosted integration runtime on a machine in your network and give it access through the firewall. If you have a private VNet, or have any other closed network, using a self-hosted integration runtime within that network will allow you to fully manage traffic flow and utilize your existing network.
+- Use a managed virtual network - You can use the Azure integration runtime in a closed network by setting up a managed virtual network using your Microsoft Purview account to connect to Azure SQL
+
+### Authentication
+
+To scan your data source, you'll need to configure an athentication method in the Azure SQL Database.
+- System-assigned managed identity (recommended) - this is an identity associated directly with your Microsoft Purview account that allows to authenticate directly with other AZure resources without needing to manage a go-between user or credential set. The system-assigned managed identity is created when your Microsoft Purview resource is created, is managed by Azure, and uses your Microsoft Purview account's name. The system-assigned managed identity can't currently be used with a self-hosted integration runtime for Azure SQL.
+- User-assigned managed identity (preview) - Similar to system-assigned identity, a user-assigned managed identity is a credential resources that allows Microsoft Purview to authenticate against Azure Active Directory. The user-assigned managed by users in Azure, rather than by Azure itself, which gives your more control over security. The user-assigned managed identity can't currently be used with a self-hosted integration runtime for Azure SQL. 
+- Service Principal - is an application that can be assigned permissions like any other group or user, without being associated directly with a person. Their authentication has an expiration date
+- SQL Authentication - Connect to the SQL database with a username and password
+
+If you are using a self-hosted integration runtime to connect to your resource, you need to use service principal or SQL authentication.
+
+### Data lineage
+
+Generally, data lineage represents the journey the data takes from its origin to where it moves across the data estate over time. Among its many uses are troubleshooting, tracing the root cause in data pipelines and debugging.
+
+Microsoft Purview Data Catalog connects with other data storage, processing, and analytics platforms to collect lineage information. As a result, the Catalog contains a generic, scenario-specific lineage experience.
+
+At the time of setting up a scan, you can enable lineage extraction toggle button to extract lineage information.
