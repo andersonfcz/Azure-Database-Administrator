@@ -336,3 +336,225 @@ To retrieve the connection string:
 1. Go to Azure portal
 2. All services and then SQL databases
 3. Connection strings
+
+# Protect data in-transit and at rest
+
+| Scenario | Definition |
+| -------- | ---------- |
+| Data at rest | Encrpyting while it's on file storage |
+| Data in transit | Encrypting while it travels through network |
+| Data in use | Encrypting while it's in RAM or CPU caches |
+
+## Transparent Data Encryption
+
+Transparent Data Encryption (TDE) encrypts all the data within a database at the page level. The data is encrypted as the data is written to the data page on disk and decrypted when the data page is read into memory. The result is that all data pages on disk are encrypted.
+
+TDE doesn't encrypt data at the table or column level. Anyone with the appropriate permissions can read and copy the data. Encryption at rest provides protection against restoring a backup to an unsecured server or making a copy of the database transaction log filest and attaching them to another server. No decryption is done during the backup operation.
+
+TDE protect data at rest, enabling software to encrypt data using the AES and 3DES algorithms without having to change existing applications.
+
+![tde](images/TDE.png)
+
+Azure SQL DB created after May 2017 have TDE enabled automatically. Databases created before May 2017 will have TDE disabled by default and TDE will need to be manually enabled. TDE in enabled in databases created after February 2019 with Azure SQL Managed Instance.
+
+By default, Azure SQL databases are encrypted using a Microsoft provided certificate, however Microsoft Azure does provide a Bring Your Own Key option. If the Azure certificate is removed, then the database connections will be closed and there will be no access to the database.
+
+Enabling TDE:
+
+1. Set a master key in the master database ```CREATE MASTER KEY ENCRYPTION```
+2. Create a certificate in the master database ```CREATE CERTIFICATE```
+3. Create a database encryption key ```CREATE DATABASE ENCRYPTION KEY```
+4. Enable database encryption key ```ALTER DATABASE```
+
+```SQL
+USE master;
+GO
+
+CREATE MASTER KEY ENCRYPTION BY PASSWORD = 'Pa55.w.rd';
+GO
+
+CREATE CERTIFICATE MyServerCert
+    WITH SUBJECT = 'TDEDemo_Certificate';
+GO
+
+USE [TDE_Demo];
+GO
+
+CREATE DATABASE ENCRYPTION KEY
+    WITH ALGORITHM = AES_256 ENCRYPTION BY SERVER CERTIFICATE MyServerCert;
+GO
+
+ALTER DATABASE TDE_Demo SET ENCRYPTION ON;
+GO
+```
+
+After TDE is enabled, it will take some time in order to encrypt the database as each database page must be read, encrypted and written back to disk. This process is a background process and is run at a low priority in order to not overload the I/O or the CPU.
+
+Once the certificate has been created, it must be mannually backed up and stored in a safe place. SQL Server integrates with Enterprise Key Managers (EKMs) such as Azure Key Vault.
+
+If the certificate is lost and the database needs to be restored from a backup, the restore will fail.
+
+To use TDE with databases in an Always On Availability Group, the certificate used to encrypt the dasabase must be backed up and restored to the other servers.
+
+### Azure disk encryption
+
+Azure VMs include a feature called Azure Disk Encryption which adds an extra layer of security that helps to protect and safeguard data and meet compliance commitments.
+
+## Server and database firewall rules
+
+Firewalls are used to prevent unauthorized users from accessing protected resources. Each Azure SQL DB maps to a public IP address. Each Azure region will have one or more public IP addresses that can reach database gateway, which will lead to the database.
+
+![firewall db](images/firewall.png)
+
+### Server-level firewall rules
+
+Both server and database level firewalls use IP Address rules and allow users at the same public IP Address to acces the SQL Server. For most use-cases, this is the outbound IP Address.
+
+Server-level firewalls are configured to allow users to connect to all databases on the server.
+
+Server level firewall rules can be configured using the Azure portal or using the ```sp_set_firewall_rule``` stored procedure from within the master database.
+
+The "Allow Azure Services and resources to access this server" setting counts as a single firewall rule when enabled.
+
+### Database-level firewall rules
+
+Database-level firewall rules are configured through T-SQL only using the ```sp_set_database_firewall_rule``` stored procedure from within the user database.
+
+Upon connection, Azure SQL DB will look first for a database-level firewall rule for the database name specified in the connection string. If it does not exist, the firewall will check the server-level IP firewall rules. Server-level IP firewall rules apply to all databases on the server.
+
+If neither exist and the user is connecting through SSMS or Azure Data Studio, they'll be prompted to create a firewall rule.
+
+## Virtual network endpoints
+
+Virtual network endpoints allow traffic from a specific Azure Virtual Network. These rules apply at the server level.
+
+The service endpoint applies to only one region.
+
+The virtual network that is connecting to the Azure SQL Db must have outbound access to the public IP address for Azure SQL Db, which can be configured using service tags for Azure SQL Db.
+
+### Private link
+
+Private link feature allows to connect to Azure SQL DB using a private endpoint.
+
+A private endpoint allows for a connection to go entirely over the Azure backbone and not oner the public internet.
+
+This feature provides a private IP address on the Virtual Network. It allows for Azure Express Route connections through that circuit.
+
+Private link offers cross-region private connectivity and protection against data leakage by allowing connections to specific resources.
+
+## Object encryption and secure enclaves
+
+SQL Server supports encrypting data within columns using Always Encrypted. Once data is encrypted, the application accessing the database must have the correct certificate in order to view the plain text data.
+
+### Always Encrypted
+
+Allows for the encryption of data within the client application, protecting sensitive data from malware and high-privileged users, such as Database Administrators, server admins, cloud admins, or those who manage the data but should have no access. This encryption happens automatically based on the settings within the SQL Server database, which tell the application what the encryption settings on the database columns are.
+
+Scenarios for usage:
+
+- Client and data on-premises - need to protect on-premises database from high-privileged users.
+- Client on-premises with data in Azure - ensure cloud administrators have no access to the data, Always Encrypted keys are stored in key store hosted on-premises.
+- Client and Data in Azure - while doesn't isolate data from cloud administrators, still benefits from the fact that the data is encrypted in the database.
+
+Always Encrypted is based on a master and a columnn encryption key. Having both keys allows each column to be encrypted using a different encryption key for maximum data protection.
+
+There are two different types of encryption:
+
+- Deterministic - always encode a value as the same string, which allows to compare columns to a constant using equality and inequality operations, and to compare columns with each other to perform joins, grouping, and indexing.
+- Randomized - the same value isn't always encrypted the same way. The only thing you can do with columns with Randomized encryption is to return them in the results.
+
+Randomized encryption is more secure than Deterministic, but is more limited. The type of encryption can't be changed after the column is created. It's recommended to use Randomized encryption for columns that had a few well-known distinct values that could pottentially be guessed by someone with access to the encrypted values.
+
+Each column being encryted may have its own key which is the key that actually performs the data encryption
+
+You create the column master key, which is used to encrypt the column encryption keys. You can supply your own key, if you're using T-SQL to encrypt the columns. This key must be stored in a key store such as Windows Certicicate Store, Azure Key Vault, or a hardware security module. The database engine never stores the column master key, and only contains the metadata about where it's stored. Not storing the master key protects data access from users who have full access to the database.
+
+Never generate the keys on teh server hosting your database, as the key could pontentially be extracted from memory on that server.
+
+In order to decrypt data from Always Encrypted column, the application needs an Always Encrypted driver to connect to the database
+
+1. The application has access to the key store where the Always Encrypted keys are stored
+2. The application then retrieves the data
+3. Data that is written back to the database is encrypted at the client through the driver
+
+In addition to the driver, the application's connection string needs to have the setting Column Encryption Setting=enabled. This setting will cause a metadata lookup to be made for each column that is used by the application
+
+### Secure enclaves
+
+Always Encrypted supports a feature called secure enclaves, which allows more robust querying of encrypted data.
+
+A secure enclave is a secured region of memory within the SQL Server process that acts as a trusted execution environment for processing encrypted data. This enclave appears as a black box to SQL Server, and it isn't possible to view any data or code, even with a debugger.
+
+It also addresses some of the limitations of Randomized encryption, which enables pattern matching, comparison operations, and indexing on columns using the encryption type.
+
+![secure-enclave](images/secure-enclave.png)
+
+## Encrypted connections
+
+It is possible to encrypt data in-transit between an instance of SQL Server and a client application with Transport Layer Security (TLS). 
+
+### Transport Layer Security (TLS)
+
+TLS is a protocol for encryting connections, and it increases the security of data being transmittted across networks.
+
+Once a private certificate is issued by a certificate authority, and it has been assigned to a server running a SQL Server instance, the server can then use it to securely validate client requests. Such validation requires that the computer running the client application is configured to trust the certificate used by SQL Server.
+
+For Azure SQL DB, it is possible to enforce a minimal TLS version at the server level. The TLS versions currently supported are 1.0, 1.1 and 1.2. It's rocommended to set to the latest TLS version supported.
+
+| Scenario | Option |
+| -------- | ------ |
+| TLS not supported | Leave the minimum TLS version at the default |
+| Latest TLS version supported | Set the minimum TLS version to 1.2 |
+| Older TLS version supported | Set the minimum TLS version to 1.0 or 1.2. Evaluate your workloads for TLS 1.2 readiness and develop a migration plan |
+
+When the fraffic between SQL Server and a client application is encrypted with TLS, an extra network roundtrip and additional processing are required at connect time.
+
+For Azure Managed Instance, use ```az sql mi update``` or ```AzSqlInstance``` to configure the minimum TLS version.
+
+By default Azure SQL DB does not require a specific minimum TLS version. Once you enforce a version of TLS, you can no logner revert to the default
+
+### Certificates
+
+You must run SQL Server Configuration Manager with a local administrator account in order to install certificates for use by SQL Server.
+
+The certificate must satisfy the conditions:
+
+- The certificate must be located in the local computer certificate store or the current user certificate store.
+- The SQL Server service account must have permission to access the certificate
+- The certificate must be within a valid period
+
+If the correct access is not provided, restarting SQL Server service will fail.
+
+### Configure SQL Server instance
+
+To configure SQL Server instance to use encrypted connections:
+
+1. Open the SQL Server Configuration Manager, and expand SQL Server Network Configuration, right-click Protocols for <instance> and select Properties
+2. Select Certificate
+3. On the Flags tab, in ForceEncryption property secet YES and click OK
+4. Restart SQL Server service
+
+To test the connection through the SSMS
+
+1. In the Connect to Server, fill the connection information and click Options
+2. On the Connection Propertios, click Encrypt connection and the Connect
+
+## SQL injection
+
+The core of the attack in that an SQL command is appended to the back end of a form field in the web or application front end, with the intent of breaking the original SQL Script and then executing the SQL script that was injected into the form field. Most often happens when you have dynamically generated SQL within your client application.
+
+One technique used to prevent SQL injection attacks is to inpect the text of the parameters, or values entered into the form fields, looking for vairous keywords. However this solution only provides minimum protection as there are may ways to force these attacks to work, some techniques include passing in binary data, having the database engine convert back to a text string, and then executing the string.
+
+One way to ensure that the value won't be used for an SQL injection is to validate that the data was entered is of the expected data type. If a string is expected, then ensure that the text string is of the correct length, and it does not contain any binary data within it.
+
+## Azure Key Vault
+
+Azure Key Valut is a tool used for storing and accessing secrets. Whether they be passwords, certificates or keys, Key Vault acts as a secure area for those secrets to be accessed in a secure fashion, typically programmatically. Key Vault data has its own RBAC policies, separate from the Azure subscription. This means someone who is the role of subscription admin will not have access to the Key Vault unless explicitly granted.
+
+SQL Server, supports Azure Key Vault to store certificates for TDE, Backup Encryption and Always Encrypted.
+
+In order to configure Key Vault integration, you need to set the Key Vault URL, the Principal name, the Principal secret, and the name of the credential.
+
+Configuring SQL Server to connect to Key Vault requires creating a normal SQL Server Login within the instance, a credential needs to be created and mapped to the login. For the identity of the credential, the name of the key vault should be used. For the secret of the credential, use the application ID from Azure Key Vault
+
+Once the credential is created, an asymmetric key can be created within the Azure Key Vault. An asymmetric key can be created within the SQL Server database. The key in database can be mapped to the Azure Key Vault asymmetric key using the ```CREATE ASYMMETRIC KEY``` with the ```FROM PROVIDER```. Once an asymmetric key is created within the database, that key can be used for TDE, Backup Encryption or Always Encrypted.
