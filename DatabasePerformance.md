@@ -393,3 +393,209 @@ END
 ### Resource Governor use cases
 
 Resource Governor is used primarily in multi-tenant scenarios where a group of databases share a single SQL Server instance, and performance needs to be kept consistent for all users of the server. You can use Resource Governor to limit the resources used by maintenance operations like consistency checks and index rebuilds.
+
+## Configure databases for optimal performance
+
+In recent versions of SQL Server, Microsoft has moved many configuration options to the database level.
+
+### Database maintenance checks
+
+The query optimizer utilizes statistical information from the indexes to attempt to build the most optimal execution plan.
+
+Having healthy indexes and statistics will esure that any given plan will perform at optimal efficiency. Index maintenance should be performed regularly as data in your databases changes over time. You could change your index maintenance strategy based on the frequency of modifications to your data.
+
+### Rebuild and reorganize
+
+Index fragmentation occurs when logical ordering within index pages doesn't match the phisical ordering. Pages can out of order during routine data modification statements such as ```UPDATE```, ```DELETE```, and ```INSERT```. Fragmentation can introduce performance issues because of the extra I/O that is required to locate the data that is being referenced by the pointers in the index pages.
+
+As data is inserted, updated and deleeted from indexes the logical ordering will no longer match the physical ordering. Over time data modifications can cause the data to become scattered or fragmented in the database. Fragmentation can degrade query performance when the database engine needs to read extra pages to locate the data.
+
+A reorganization of an index is an online operation that will defrag the leaf level of the index (clustered and nonclustered). This process will physically reorder the leaf-level pages to match the logical order of the nodes from left to right. During this process, the index pages are also compacted based on the configured fillfactor value.
+
+A rebuild can be either online of offline depending on the command executed or the edition of SQR being utilized. An offline rebuild will drop and re-create the index itself. In a online rebuild, a new index will be built in parallel to the existing index, once the new index has been built, the existing one will be dropped and then the new one will be renamed to match the old index name. The online rebuild will require more space as the new index is built in parallel to the existing index.
+
+The common guidance for index maintenance:
+
+- > 5% and < 30% - Reorganize the index
+- > 30 % - Rebuild the index
+
+The SQL Server and Azure platform offer DMVs that allow to detect fragmentation in your objects. The most commonly used DMVs are ```sys.dm_db_index_physical_stats``` for b-tree indexes and ```sys.dm_db_column_store_row_group_physical_stats``` for column store indexes.
+
+Index rebuilds cause the statistics on the index to be updated, which can further help performance. Index reorganization doesn't update statistics
+
+Microsoft introduced with SQL Server 2017 resumable rebuild index operations which provides more flexibility in controlling how much time a rebuild operation might impose. With SQL Server 2019, the ability to control an associated maximum degree of parallelism was introduced.
+
+### Statistics
+
+Understanding the importante of statistics is critical.
+
+Statistics are stored in the user database as blobs. These blobs contain statistical information about the distribution of data values in one or more columns of a table or indexed view.
+
+The query optimizer uses column and index statistics in order to determine cardinality, which is the number of rows a query is expected to return.
+
+Cardinality estimates are then used by the query optimizer to generate the execution plan. Cardinality estimates also help the optimizer determine what type of operation to use to retrieve the data (index seek or scan).
+
+To see the list of user defined statistics:
+
+```SQL
+SELECT sp.stats_id, 
+       name, 
+       last_updated, 
+       rows, 
+       rows_sampled
+FROM sys.stats
+     CROSS APPLY sys.dm_db_stats_properties(object_id, stats_id) AS sp
+WHERE user_created = 1
+```
+
+### Create statistics
+
+When you have ```AUTO_CREATE_STATISTICS``` option to ```ON```, the query optimizer creates statistics on the indexed column by default. The query optimizer also creates statistics for single columns in query predicates.
+These methods provide high-quelity query plans for most queries. At times, you may need to create more statistics using ```CREATE STATISTICS``` to improve specific query plans.
+
+It's recommended to keep auto create statistics option enabled as it will allow the query optimizer to create statistics for query predicate columns automatically.
+
+Consider creating statistics when:
+
+- The Database Engine Tuning Advisor suggests
+- The query predicate contains multiple columns that aren't already in the same index
+- The query selects from a subset of data
+- The query has missing statistics
+
+### Maintenance tasks automation
+
+Different tools are available to perform database maintenance tasks depending on the platform where the database is running.
+
+#### SQL Server on VM
+
+You have access to services such as SQL Agent or Windows Task Scheduler. These automation tools can help keeping the amount of fragmentation within indexes to a minimum. With larger databases, a balance between a rebuild and a reorganization of indexes must be found to ensure optimal performance.
+
+#### Azure SQL Database
+
+You don't have access to SQL Agent nor Windows Task Scheduler. Index maintenance must be created using other methods:
+
+- Azure Automation runbooks
+- SQL Agent Job from SQL Server in an VM (remote call)
+- Azure SQL elastic jobs
+
+
+#### Azure SQL Managed Instance
+
+You can schedule jobs through SQL Agent.
+
+## Database scoped configuration options
+
+As more complex features have been introduced to the database, more options have been added. Many of these options are tied to the compatibility level of the database. Database configuration options break down into two groups:
+
+- Options configured by the ```ALTER DATABASE SCOPED CONFIGURATION```
+- Options configured by the ```ALTER DATABASE```
+
+There's no significance to the different ways to set these options. Options that are set using ```ALTER DATABASE```
+
+- Database recovery model - Whether the database is in full or simple recovery model
+- Automatic tuning option - Whether to enable the force last good plan
+- Auto create and update statistics - Allows the database to create and update statistics and allows for the option of asynchronous statistics updates
+- Query store options - The query Store are configured here
+- Snapshot isolation - you can configure snapshot isolations and read committed snapshot isolation
+
+Many options previously configured on the server can now be configured at the database level.
+
+- Maximum Degree of Parallelism - allows for a database to configure its own MaxDOP and override the server's setting
+- Legacy Cardinality Estimation - allows the database to use the older cardinality estimator. Some queries may have degraded performane under the newer cardinality estimator. If you use this option with a newer compatibility level, you can sitll get the benefits of Intelligent Query Processing in compatibility level 140 or 150
+- Last Query Plan Stats - allows to capture the values of the last actual execution plan for a query. Only active in compatibility level 150
+- Optimmize for Ad Hoc Workloads - uses the optimizer to store a stub query plan in the plan cache. This help to reduce the size of teh plan cache for workloads that have numerous single user queries.
+
+## Automatic tuning
+
+Automatic tuning is a monitoring and analysis feature that continuously learns about your workload and identifies potential issues and improvements.
+
+The automatic tuning recommendations are based on the data collected from Query Store. Execution plans evolve over time due to schema changes, index modifications, or changes to the data that cause updates to the statistics. This evolution can cause queries to perform poorly as the execution plan no longer meets the demands of the query.
+
+Automatic tuning allows for the gathering and applying machine learning services against performance metrics to provide suggested improvements or even allow for self-correction.
+
+In Azure SQL Database you can improve query performance by index tuning. Azure SQL Database automatic tuning can identify indexes that should be added or even removed from the database to enhance query performance.
+
+### Automatic plan correction
+
+With the help of the Query Store data, the database engine can determine when query execution plans have regressed in performance. While you can manually indentify a regressed plan through the user interface, the Query Store provides the option to notify you automatically.
+
+After the feature is enabled, the database engine will automatically force any recommended query execution plan when:
+
+- The previous plan had a higher error rate than the recommended plan
+- The estimated CPU gain was greater than 10 seconds
+- The force plan has performed better than the previous one
+
+The plan will rever back to the last known good plan after 15 executions of the query.
+
+When plan forcing occurs automatically, the database engine will apply the last known good plan and will also continue to monitor query execution plan performance. If the forced plan doesn't perform better than the previous plan, it will be then unforced and force a new plan to be compiled. If the forced plan continues to outperform the previously bad plan, it will remain forced until such time as a recompile occurs.
+
+You can enable automatic plan correcton. The Query Store must be enabled and in Read-Write mode. If either of those criteria aren't met, the ```ALTER``` will fail.
+```SQL
+ALTER DATABASE [WideWorldImporters] 
+SET AUTOMATIC_TUNING (FORCE_LAST_GOOD_PLAN = ON);
+```
+
+You can examine the automatic tuning recommendations through a DMV ```sys.dm_db_tuning_recommendations``` which is available in SQL Server 2017 or higher. This DMV provides information such as reasons as to why the recommendation was provided, the type of recommendation, and teh state of the recommendation. To confirm that automatic tuning is enabled check the view ```sys.database_automatic_tuning_options```
+
+### Automatic index management
+
+Azure SQL Database can perform automatic index tuning. Over time, database will learn about existing workloads and provide recommendations on adding or removing indexes to provide better performance.
+
+When enabled, the Performance Recommendations page will identify indexes that can be created or dropped depending on query performance. This feature isn't available for on-premises, and only available for Azure SQL Database.
+
+You can use this query to see the automatic tuning features enabled in your database:
+
+```SQL
+SELECT name,
+    desired_state_desc,
+    actual_state_desc,
+    reason_desc
+FROM sys.database_automatic_tuning_options
+```
+
+Creating new indexes can consume resources, Azure SQL will monitor the resources required to implement new indexes to avoid causing performance degradation. The tuning is postponed until the resources are available.
+
+Monitoring ensures any action take won't hapm performance, if an index is dropped and query performance noticeably degrades, the recently dropped index will be automatically recreated.
+
+### Intelligent query processing
+
+In SQL Server 2017, 2019, and Azure SQL, Microsoft has introduced new features into compatibility level 140 and 150. Many of these features correct what were formerly anti-patterns like using user defined scalar value funtions and using table variables.
+
+These features break down into a few families of features:
+
+![now families of features](images/new-feature-families.png)
+
+Intelligent query processing includes features that improve existing workload performance with minimal implementation effort.
+
+To make workloads automatically eligible for intelligent query processing, change the applicable database compatibility level to 150
+
+```SQL
+ALTER DATABASE [WideWorldImportersDW] 
+SET COMPATIBILITY_LEVEL = 150;
+```
+
+### Adaptative query processing
+
+Adaptative query processing includes options that make query processing more dynamic, based on the execution context of a query. These options include features that enhance the processing of queries
+
+- Adaptive Joins - the database engine defers choice of join between hash and nested loops based in the number of rows going into the join. Currently only work in batch execution mode
+- Interleaved Execution - Currently this feature supports multi-statement table-valued functions (MSTVF). Prior to SQL Server 2017, MSTVF used a fixed row estimate of either one or 100 rows, depending on the version of SQL Server. This estimate could lead to suboptimal query plans if the function returned many more rows. An actual row count is generated from the MSTVF before the rest of the plan is compiled with interleaved execution.
+- Memory Grant Feedback - SQL Server generates a memory grant in the initial plan of the query, based on row count estimates from statistics. Severe data skew could lead to either over or under-estimates of row counts, which can cause over-grants of memory that decrease concurrency, or under-grants, which can cause the query to spill data to tempdb. Wthi Memory Grant Feedback, SQL Server detects these conditions and decrease or increase the amount of memory granted to the query to either avoid the spill or overallocation.
+
+These features are automatically enabled under compatibility mode 150
+
+### Table variable deferred compilaton
+
+Like MSTVF, table variable in SQL Server execution plans carry a fixed row count estimate of one row. This fixed estimate led to poor performance when the variable had a much larger row count than expected. With SQL Server 2019, table variables are now analyzed and have an actual row count. Deferred compilation is similar in nature to interleaved execution for MSTVF, except it's performed at the first compilation of the query rather than dynamically within the execution plan.
+
+### Batch mode on row store
+
+Batch execution mode allows data to be processed in batches instead of row by row. Queries that incur significant CPU costs for calculations and aggregations will se the largest benefits from this processing model. By separating batch processing and columnstore indexes, more workloads can benefit from batch mode processing.
+
+### Scalar user-defined funcitoin inlining
+
+In older versions of SQL, scalar functions performed poorly for several reasons. Scalar functions were executed iteratively, effetively proccesing one row at a time. They didn't have proper cost estimation in an execution plan, and they did'nt allow parallelism in a query plan. With user-defined funcition inlining, these functions are transformed into scalar subqueries in place of the user-defined function operatior in the execution plan. This transformation can lead to significant pains in performance for queries that involve scalar function calls.
+
+### approximate count distinct
+
+A common data warehouse query pattern is to execute a distinct count of order or users. This query pattern can be expensive against a large table. Approximate count distinct introduces a much faster approach to gathering a distinct count by grouping rows. This function guarantees a 2% error rate with a 97% confidence internal.
