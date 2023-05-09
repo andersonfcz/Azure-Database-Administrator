@@ -193,3 +193,236 @@ PaaS solutions by nature are not designed to allow traditional hybrid solutions.
 Hybrid solutions are IaaS-based since they rely on traditional infrastructure. Hybrid solutions can be used to help migrate to Azure, but the most common usage is to create a robust disaster recovery solution for an on premises system. A secondary replica for an AG can be added in Azure. That means any associated infrastructure must exist, such as AD DS and DNS.
 
 The most important consideration for a hybrid HADR solution that extends to Azure is networking. Not having the righ bandwidth could mean missing your RTO and RPO. Azure has a fast networking option called ExpressRoute. If it's not something your company can or will implement, configure a secure site-to-site VPN so that Azure VMs will act as an extension of your on premises infrastructure.
+
+
+## Windows Server Failover Cluster in Azure
+
+Deploying a Windows Server Failover Cluster (WSFC) in Azure is similar to configuring one on premises, but there are some Azure-specific considerations.
+
+One of the most important aspects is deciding what to use for a witness resource. Witness is a core component of the quorum mechanism. Quorum is what helps ensure that everything in the WSFC stays up and running. If you lose quorum, the WSFC will go down taking an AG or FCI with it. The witness resource can be a disk, file share (SMB 2.0 or later), or cloud witness. It's recommended that you use a cloud witness as it is fully Azure-based, especially for solutions that will span multiple Azure regions or are hybrid. The cloud witness feature is available in Windows Server 2016 and later.
+
+The next consideration is the Microsoft Distributed Transaction Coordinator (DTC or MSDTC). Some applications use it, but most applications don't. If you require DTC and are deploying an AG or FCI, you should cluster DTC. Clustering TC requires a shared disk to work properly even though you may not require one otherwise, as in the case of an AG.
+
+Most WSFC deployments require the use of AD DS and DNS; FCI always do. AGs can be configured without requiring AD DS but still needing DNS. In Win Server 2016, there's a variant of WSFC called Workgroup Cluster, which can be used with AG only.
+
+WSFC itself needs a unique name in the domain (and DNS) and requires an object in AD DS called the Cluster Name Object (CNO). Anything created in the context of the WSFC that has a name will require a unique name, and at least one IP address. If the configuration will stay in a single region, IP addresses will be in a single subnet. If the WSFC will span multiple regions, more than one IP address will be associated with the WSFC, and an AG if it spans multiple regions as part of the WSFC.
+
+A typical Azure-based WSFC will only require a single virtual network card (vNIC). Unlike the setup for an on-premises physical or virtual server, the IP address for the vNIC has to be configured in Azure, not in the VM. That means inside the VM it will shouw up as a dynamic address (DHCP).
+
+Considerations for the WSFC IP address is also different from on premises. There's no way to reserve the IP address at the Azure level since it's fully maintained within the guest configuration. This means that if subsequent resources that use an IP address in Azure use DHCP, you must check for conflicts.
+
+### Failover clustering feature
+
+Before WSFC can be configured, the underlying Win feature must be enabled on every node that will participate in the WSFC. This can be done using Server Manager or PowerShell.
+
+```PowerShell
+Install-WindowsFeature Failover-Clustering -IncludeManagementTools
+```
+
+### Cluster validation
+
+For a WSFC to be considered supported, it must pass cluster validation. It's a buit-in process that checks the nodes via a series of tests to ensure the entire cofiguration is suitable for clustering. After validation, each test will return with an error, a warning, a pass, or a message the test isn't applicable. Warnings are acceptable if that condition is expected. All errors must be resolved.
+
+Validation can be run via Failover Cluster Manager or by using Test-Cluster cmdlet.
+
+For FCI these tests also check the shared storage. For Ag with no shared storage, in Win Server 2016 and later, the results will come back as not applicable. For Win Server 2012 R2, the disk test will show a warning when there are no shared disks, this is expected.
+
+### Windows Server Failover Cluster in Azure
+
+To create a WSFC in Azure, you can't use the Wizard in Failover Cluster Manager for FCI or G deployed using Win Server 2016 and earlier. Due to the DHCP issue, the only way to create the WSFC is using PowerShell and specify the IP address.
+
+```PowerShell
+New-Cluster -Name MyWSFC -Node Node1,Node2,…,NodeN -StaticAddress w.x.y.z
+```
+
+WSFC with no shared storage
+```PowerShell
+New-Cluster -Name MyWSFC -Node Node1,Node2,…,NodeN -StaticAddress w.x.y.z -NoStorage
+```
+
+Workgroup Cluster with DNS
+```PowerShell
+New-Cluster -Name MyWSFC -Node Node1,Node2,…,NodeN -StaticAddress w.x.y.z -NoStorage -AdministrativeAccessPoint DNS
+```
+
+Win Server 2019 by default will use a distributed network name for IaaS. A distributed network name is one that creates just a network name, but the IP address is tied to the underlying nodes. A distributed name is for the WSFC name only, it can't be used with the name of an AG or FCI.
+
+The creation mechanism in Win Server 2019 detects if it's running in Azure or not and will create the cluster using a distributed network name unless you specify it differently. There are cases you many want to consider deploying a WSFC traditionally using PowerShell. For this, you need to add the option ```-ManagementPointNetwork Singleton```.
+
+```PowerShell
+New-Cluster -Name MyWSFC -Node Node1,Node2,…,NodeN -StaticAddress w.x.y.z -NoStorage -ManagementPointNetwork Singleton
+```
+
+for a Workgroup Cluster, you'll need to ensure the name and IP address are in DNS for any name or IP address created in the context of the WSFC such as the WSFC itself, an FCI name and IP address, and a AG listener name and IP address.
+
+### Failover Cluster Instance
+
+Uses Win Server Failover Clustering (WSFC) functionality to provide high availability though redundancy at the instance level
+
+An FCI is an instance fo SQL Server that is installed across WSFC nodes and possibly across multiple subnets. On the network, an FCI appears as a single local instance that uses a virtual network name. Therefore, it becomes transparent for the application, since it doesn't know which node the instance is currently running on. As a result, there is no need to reconfigure clients and applications during or after a failover.
+
+The multi-subnet support eliminates the need for a virtual LAN.
+
+When using multi-subnet, each subnet of the FCI is assigned a virtual IP address, and a failover occurs as follows:
+
+- Virtual network names on DNS server are updated with virtual IP addressess corresponding to the respective subnets.
+- After a multi-subnet failover, clients and applications can then connect to the FCI via the same virtual network name
+
+### Distributed Network Name (DNN)
+
+DNN replaces the virtual network name (VNN) as the connection point when used with FCI. As a result, the VNN no longer requires an Azure Load Balancing service.
+
+VNN still exists in an FCI deployment. but the clients connect to the DNN DNS name instead of the VNN name.
+
+### Test WSFC
+
+After the WSFC is created but before configuring FCI or AG, test that the WSFC is working properly. For clusters that require shared storage, such as for those supporting FCI, it's important that you test the ability for all the nodes in the cluster to access any shared storage, and to take the ownership of the storage as they would in a failover. You can do this by using the Move Available Storage in the Failover Cluster Manager.
+
+## Always-on availability groups
+
+For all availability configurations of AG, an underlying cluster is required, whether or not it uses AD DS.
+
+Configuring an AG is nealy the same in Azure as it is on premises.
+
+Same as the WSFC itself, you can't reserve the listerner's IP address in Azure, so you need to ensure something else doesn't come along and grab it otherwise there could be a conflict on the network.
+
+Don't place any permanent database on the ephemeral storage. All VM that are participating in an AG should have the same storage configuration. You must size disk appropriately for performance.
+
+Before an AG can be configured, the AG feature must be enabled. This can be done in SQL Server Configuration Manager or PowerShell with the cmdlet Enable-SqlAlwaysOn. This will require a stop and start of SQL Server Service.
+
+### Create Availability group
+
+You can use SSMS, T-SQL or PowerShell to create AG in Azure.
+The only difference is that whether or not you create the listener as part of the initial AG configuration, the listener requires the creation of an Azure load balancer and has some extra configuration is the WSFC related to the load balancer.
+
+### Create an Iternal Azure load balancer
+
+Once listener is created, an ILB must be used. Without configuring an ILB, applications, end users, administrators, and others can't use the listener unless they were connected to the VM that hosts an AG's primary replica.
+
+You can use basic or standard load balancer. Deployment using Availability Zones require the use of a standard load balancer. The listener IP address and the port used for the listener are what is configured as part of the load balancer. A single load balancer supports more than one IP address, so depending on your standards, you may not need a different load balancer for each AG.
+
+Without the probe port, listeners won't work properly as it isn't enough just create the load balancer. Each IP address that will use the load balancer queries a unique probe port. Probe ports are high numbers such as 59999.
+
+The probe port is set on the IP address associated with the listener
+
+```PowerShell
+Get-ClusterResource IPAddressResourceNameForListener | Set-ClusterParameter ProbePort PortNumber
+```
+
+Adding the probe port will require a stop and start of the IP address of the listener.
+
+If you have multi-subnet configuration, a load balancer will need to be configured in each subnet and the probe port for that region associated with the IP resource for that subnet in the WSFC.
+
+If you can't directly connect to the listener, then you need to use the cmdlet ```Test-Connection``` to verify that it's configured correctly.
+
+```PowerShell
+Test-NetConnection NameOrIPAddress -Port PortNumber
+```
+
+Some environments may require that the IP address for the WSFC and selected ports must be accessible for administration or other purposes, which mean to configure those as part of the same or a different load balancer.
+
+### Distributed availability groups
+
+The main difference between an on-premises configuration and an Azure configuration for a distributed AG is that as part of the load balancer configuration in each region, the endpoint port for the AG needs to be added. The default port is 5022.
+
+A traditional AG has resources configured in WSFC or if on Linux, Pacemaker. A distributed AG does not need WSFC or Pacemaker, everything about it is maintained within SQL Server.
+
+## Azure Site Recovery
+
+It's an option that work with the VM, whether or not SQL Server is running in it. It works with SQL Server, but isn't designed specifically to account a specific RPO. The disks of a VM configured to use Azure Site Recovery are replicated to another region. This means all changes to a disk are replicated as soon as they occur, but this process knows nothing of database transactions. This is why recovering to a specific data point may not be possible with Azure Site Recovery in the same way it is for SQL Server-centric solution such as when using an AG.
+
+![azure site recovery](images/azure-site-recovery-flow.png)
+
+If it isn't possible to deploy one of the in-guest options for IaaS solutions, Azure Site Recovery is a viable option.
+
+Azure Site Recovery can potentially protect against ransomware. If infected, you could roll back the VM to a point before the infection.
+
+The key things to know when replication is enabled on a VM
+
+- There's a Site Recovery Mobility extension configured on a VM
+- Changes are sent continually unless Azure Site Recovery is unconfigured on replication is disabled
+- Crash consistent recovery points are generated every five minutes, and application-specific recovery points are generated according to what is configured in the replication policy.
+
+For the SQL Server, the App consistent snapshot frequency value is what you may want to adjust to reduce your RPO. However, due to the nature of Azure Site Recovery (uses Volume Shadow Service), lowering this value could potentially cause problems since there's a brief freeze and thaw of I/O when the snapshots are taken. The impact of the freeze and thaw could be magnified if other options such AG are configured.
+
+If multiple VMs are part of an overall solution, they can be replicated together to create a shared crash- and application-consistent recovery points. This is known as multi-VM consistency and will affect performance, it's recommended not to configure this option.
+
+One major benefit of Azure Site Recovery is that you can test disaster recovery without needing to bring down production.
+
+A consideration is if there's a failover to another region, the replica VMs aren't protected when they're brought online.
+
+## Temporal tables in Azure SQL Database
+
+Azure SQL Database and Managed Instance allow you to track and analyze the changes to your data using  Temporal Tables. This feature requires that the tables themselves be converted to be temporal, which means the table will have special properties and will also have a corresponding history table.
+
+The temporatl table allows you to use the history table to recover data that may have been deleted or updated. Recovering data from the history table is a manual process using T-SQL.
+
+```SQL
+SELECT * FROM Employee
+FOR SYSTEM_TIME
+        BETWEEN '2021-01-01 00:00:00.0000000' AND '2022-01-01 00:00:00.0000000'
+WHERE EmployeeID = 1000 ORDER BY ValidFrom;
+```
+
+### Use cases scenarios
+
+- Auditing - provides data audit to existing applications
+- Historical trends (time travel) - users can see how data changed over time
+- Anomaly detection - for data that don't match an expected pattern, you might investigate sales spikes that don't line up with the average.
+- Data protection due to data loss - useful to revert undesired data changed without requiring backups
+- Slowly changing dimensions - dimensions in data warehousing are tipiaclly static data. certain scenarios require you to track data changes in dimensions tables.
+
+### Storage consideration
+
+Keeping historical data for a long time or performing heavy data changes may cause the history table to increase the database size more than normal tables. A large history increase storage cost and affect query performance.
+
+It's important to establish data retention policy within the history table.
+
+There are four ways to manage, store, and delete historical data:
+
+- Stretch Database - configure SQL Server to silently move historical data from your temporatl history tables to Azure.
+- Table Partitioning - oldest part of the historical data can be moved out of the history table by using a slinding window approach
+- Custom Cleanup Script - you can use a custom cleanup script to remove the data from the history table
+- Retention Policy - can be easily configured at the temporal table level.
+
+## Active geo-replication for Azure SQL Database
+
+One method to increase availability for Azure SQL Database is to use active geo-replication, it creates a secondary database replica in another region that is asychronously kept up to date.
+
+This replica is readable, similar to an AG in IaaS. Underneath the surface, Azure uses AG to maintain this functionality, which is why some of the terminologies are similiar (primary and secondary logical servers, read-only databases, etc).
+
+Active geo-replication provides business continuity by allowing to programmatically or maunally failover primary database to secondary regions during a disaster.
+
+Managed Instance doesn't support active geo-replication, you must use auto-failover groups instead.
+
+![active geo-replication](images/geo-replication.png)
+
+All databases involved in geo-replication relationship are required to have the same service tier.
+
+To avoid replication overhead due to a large write workload that can affect the replication performance, it's recommended that the geo-secondary is configured with the same compute size as the primary.
+
+you can manually configure geo-replication by accessing Data Management in Azure protal selecting Replicas and then Create replica.
+
+You can mannualy fail over your secondary replica in the portal. The roles will switch with the secondary becoming the new primary, and the old primary the secondary.
+
+### Cross subscription geo-replica
+
+Some scenarios require to configure a secondary replica on a different subscription than the primary database. Cross subscription geo-replication allows to perform this task.
+Cross subscription geo-replication is only available programmatically.
+
+## Auto-failover groups for Azure SQL Database and Managed Instance
+
+An auto-failover gorup is an availability feature that can be used with both Azure SQL Database and Managed Instance. Autofailover groups let you manage how databases on an Azure SQL Database or Managed Instance are replicated to another region, and let you manage how failover could happen. The name assigned to the autofailover group must be unique within the *.database.windows.net domain. Managed Instance only supports one autofailover group.
+
+Auto-failover groups provide AG-like functionality called a listener, which allows both read-write and read-only activity. There are two kinds of listener: read-write and read-only traffic. Behind the scenes in a failover, DNS is updated so clients will be able to point to the abstracted listener name and not need to know anything else. The database server containing the read-writes copies is the primary, and the server that is receiving the transactions from the primary is the secondary.
+
+![auto-failover group](images/auto-failover-group.png)
+
+Auto-failover groups have two policies
+
+- Automatic - by default, when a failure occurs and it's determined that a failover must happen, the auto-failover group will switch regions. The ability to fail over autocamically can be disabled.
+- Read-Only - by default, if a failover occurs, the read-only listener is disabled to ensure performance of the new primary when the secondary is down. This behavior can be changed so that both types of traffic are enabled
+
+Failover can be performed manually even if automatic failover is allowed. Depending on the type of failover, there could be data loss. Unplanned failover could result in data loss if forced and the secondary isn't fully synchronized with the primary. Configuring GracePeriodWithDataLossHours control how long Azure waits before failing over. The default is one hour. If you have a tight RPO and can't afford much data loss, set the value higher. This approch may result in less data loss as the secondary has more time to fully synchronize with teh primary.
+
+One auto-failover group can contain one or more databases. The database size and edition will be the same on both the primary and secondary. The database is created automatically on the secondary through a process called seeding. Depending on the size of the database this may take some time.
