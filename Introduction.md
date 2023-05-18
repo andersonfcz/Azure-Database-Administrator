@@ -245,5 +245,5 @@ EXEC sp_configure 'external scripts enabled', 1;
 RECONFIGURE WITH OVERRIDE;
 ```
 
-The command allows the execution of external scripts and should be enabled before you attempt to use sp_execute_external_script to execute Python or R scripts in your database.
+The command allows the execution of external scripts and should be enabled before you attempt to use ```sp_execute_external_script``` to execute Python or R scripts in your database.
 

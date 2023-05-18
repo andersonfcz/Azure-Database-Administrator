@@ -426,3 +426,126 @@ Auto-failover groups have two policies
 Failover can be performed manually even if automatic failover is allowed. Depending on the type of failover, there could be data loss. Unplanned failover could result in data loss if forced and the secondary isn't fully synchronized with the primary. Configuring GracePeriodWithDataLossHours control how long Azure waits before failing over. The default is one hour. If you have a tight RPO and can't afford much data loss, set the value higher. This approch may result in less data loss as the secondary has more time to fully synchronize with teh primary.
 
 One auto-failover group can contain one or more databases. The database size and edition will be the same on both the primary and secondary. The database is created automatically on the secondary through a process called seeding. Depending on the size of the database this may take some time.
+
+## Backup and restore databases
+
+### Back up nad restore SQL Server on Azure VM
+
+SQL Server has two types of databases:
+
+- System: used by SQL Server such as master and msdb
+- User: databases created by users that store the data for applications
+
+System databases are usually updated less frequently. As general rule of thumb, system databases aren't restored from one SQL Server instance to another. The main concern should be backing up the user databases.
+
+The most common types of backups for SQL Server are full, differential, and transaction log. Depending on the deployment method, not all of these may be available.
+
+A full database backup is a backup of a single database. When the backup is made, all the pages from the database are copied to the backup device. You can restore the database to the point at which the backup was made. If you want to restore to a specific point-in-tme to achieve RPO, that can happen with differential and/or transaction log backups. A Full database backup backs up all the changes made to the database by the time it finishes.
+
+A Differential backup contains all the database pages that have changed since the last time a full backup was made.
+
+A transaction log backup isn't only used to achieve RPO, but it clears the transaction log and keeps its size manageable. Transaction log backupus can be generated as frequently as every 30 seconds.
+
+There are other backup options such as copy-only, file, filegroup, partial, and more.
+
+A differential or log backup can be restored after a full database is restored, as long as the database RESTORE command uses either ```WITH NORECOVERY``` or ```WITH STANDBY``` option. STANDBY option leaves the database in a read-only state. If neither optinn is used, the database RESTORE will do a recovery, after which no extra backups can be applied.
+
+```SQL
+RESTORE DATABASE [DatabaseName]
+FROM DISK = 'C:\Backup\FullBackup.bak'
+WITH NORECOVERY;
+
+-- Restore additional backups (differential and transaction log backups) using WITH NORECOVERY option
+RESTORE DATABASE [DatabaseName]
+FROM DISK = 'C:\Backup\DifferentialBackup.bak'
+WITH NORECOVERY;
+
+-- Finally, bring the database online after all backups have been restored
+RESTORE DATABASE [DatabaseName]
+WITH RECOVERY;
+```
+
+SQL Server databases has three recovery models that governs the type of backups and restores that could be used with the database:
+
+- FULL - allow all types of backups
+- SIMPLE - doesn't allow transaction log backup
+- BULK_LOGGED
+
+### Backup a SQL Server VM
+
+Azure Backup can back up VMs that contain SQL Server. These backups would contain not just SQL Server databases; they would contain everything that is in the VM so it could be restored as a whole. It may not be right option for everyone, but it can potentially protect agains problems like ransomware.
+
+VM-level backups are SQL Server-aware, also known as application aware, so they'll create an application-consistent backup. This means that if you restore a VM-level backup, it will not break SQL Server. When using this option, if you look in the logs you will see that the I/O has been momentarily frozen and then starts again when complete. It may causes issues with availability features like AGs.
+
+Combining SQL Server backups with snapshots can potentially cause issues. If snapshot delays casue backup failures, set the following registry key:
+
+```
+[HKEY_LOCAL_MACHINE\SOFTWARE\MICROSOFT\BCDRAGENT]
+"USEVSSCOPYBACKUP"="TRUE"
+```
+
+#### Use local disks or network share for backup
+
+Databases can be backed up to disks attached to the VM or to network shares (including Azure Files) that SQL Server has access to. You might want to make sure that the backups are copied to a second location so as not to create a single point of failure.
+
+#### Backup databases to and restore from URL
+
+Another option is to configure backup to URL fro the SQL Server instance installed in the VM. Backup and restore from URL for an IaaS VM is effectively a local option.
+
+Backup to URL requires an Azure storage account and uses Azure blob storage service. The path to a backup file will look something like ```https://ACCOUNTNAME.blob.core.windows.net/ContainerName/MyDatabase.bak```. You can include more folder names under your container.
+
+To backup to or restore from a URL, authentication must be established between the SQL Server instance and Azure. A SQL Server Credential can be composed of the Azure storage account name and access key authentication or a Shared Access Signature. If the former is used, the backup will be stored as a page blob and if the latter, it will be stored as a block blob. Starting with SQL Server 2016, only block blob is available so you should use a Shared Access Signature. From a cost perspective, block blobs are also cheaper, and Shared Access Signature tokens offer better security control.
+
+Restoring from a URL is as simple as restoring from disk or a network share. In the SSMS UI, select URL from the backup media type in the Wizard. If using T-SQL, instead using ```FROM DISK```, you would use ```FORM URL``` with the appropriate location and backup file name.
+
+```SQL
+BACKUP LOG contoso 
+TO URL = 'https://myacc.blob.core.windows.net/mycontainer/contoso202003271200.trn'
+```
+
+```SQL
+RESTORE DATABASE contoso 
+FROM URL = 'https://myacc.blob.core.windows.net/mycontainer/contoso20200327.bak' 
+WITH NORECOVERY
+```
+
+### Automated backup using SQL Server resource provider
+
+Any IaaS VM that has SQL Server installed can use the SQL Server resource provider. One of its options is the ability to configure automated backups so Azure takes care of backing up SQL Server databases. It requires the use of a storage account.
+
+Implementing backups this way you can manage retention times for the backups. Another benefit is that you can ensure RPO taking database and transaction log backups all in one place. The Automated backup option is currently only available fro Windows Server-based SQL Server installations.
+
+You choose one method of backing up databases with IaaS-based SQL Server deployments. If you use automated backups, with transaction log backups, do not also configure those at the instance level inside the VM. You could cause problems with the log chain with restoring a database if thing are uncoordinated, because each log backup clears the log and you must have an entire unbroken chain of log backups in order to do a log restore.
+
+While backups can be automated, restores can't be. You would need to configure and use the restore from URL functionality within SQL Server.
+
+### Back up and restore a database using Azure SQL Database
+
+Back up and restore on SQL Server PaaS offering work differently than os IaaS. Bakups are generated automatically for Azure SQL Databas, and Managed Instance. Full backup is created once a week, differential every 12 hours and transaction logs every 5 - 10 minutes. All backups are located in read-acess, geo-redundant (RA-GRS) blobs replicated to a datacenter that is paired based on Azure rules.
+
+backup policies can be configured per database.
+
+If the server containing the database is deleted, all backups will be deleted at the same time, and there's no way to recover them. If the server isn't deleted but the database is, you can restore the database normally.
+
+Both SQL Database and Managed Instance have a feature called Accelerated Database Recovery (ADR). This feature is enabled by default, and its purpose is to decrease the time it takes to deal with long running transactions so they don't affect the recovery time. Although Accelerated Database Recover was developed for Azure and was originally an Azure feature, ADR was implemented in SQL Server 2019.
+
+You can't restore Managed instance backups on SQL Databases.
+
+Restore in place ins't supported on SQL Database and Managed Instance. You need to make sure the database doesn't exist before attempting the restore operation. By default PTR is set to seven days and can change to up to 35 days.
+
+Both SQL Database and Managed Instance have a feature to restore a deleted database to the last point in time available before the ```DROP DATABASE``` took place.
+
+### Database backup and restore for SQL Managed Instance
+
+Azure manages backups for databases in Managed Instance automatically, and the operate similar to SQL Database.
+
+You can also manually back up, and restore databases with Managed Instance using the same backup to URL/restore from URL feature found in SQL Server. That requires the use of credentials to access the Azure Blob Storage. SQL Database doesn't support this feature.
+
+You can only generate ```COPY_ONLY``` backup since Azure is maintaining the log chain for Managed Instances.
+
+```SQL
+BACKUP DATABASE contoso
+TO URL = 'https://myacc.blob.core.windows.net/mycontainer/contoso.bak' 
+WITH COPY_ONLY
+
+```
